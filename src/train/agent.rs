@@ -1,10 +1,10 @@
 use std::sync::mpsc::{Receiver, Sender};
 use tch::Device;
 
-use crate::env::{self, FrameData, GameEnv};
-use crate::input::Input;
-use crate::model::ActorCritic;
-use crate::ppo::{self, PpoConfig, RolloutBuffer};
+use super::model::ActorCritic;
+use super::ppo::{self, PpoConfig, RolloutBuffer};
+use crate::game::env::{self, FrameData, GameEnv};
+use crate::game::input::Input;
 
 const ROLLOUT_LENGTH: usize = 128;
 const GAMMA: f64 = 0.99;
@@ -12,7 +12,7 @@ const GAE_LAMBDA: f64 = 0.95;
 const LEARNING_RATE: f64 = 2.5e-4;
 const SAVE_INTERVAL: u64 = 10_000;
 
-pub fn training_loop(frame_rx: Receiver<FrameData>, action_tx: Sender<usize>, input: Input) {
+pub fn training_loop(frame_rx: Receiver<FrameData>, action_tx: Sender<usize>, mut input: Input) {
     let device = Device::cuda_if_available();
     println!("Training on: {:?}", device);
 
@@ -21,7 +21,6 @@ pub fn training_loop(frame_rx: Receiver<FrameData>, action_tx: Sender<usize>, in
     let mut env = GameEnv::new(frame_rx, action_tx, device, env::stub_reward);
     let mut buffer = RolloutBuffer::new(ROLLOUT_LENGTH);
     let ppo_cfg = PpoConfig::default();
-    let mut input = input;
 
     let mut obs = env.reset();
     let mut episode_reward = 0.0;

@@ -1,6 +1,6 @@
 use tch::{Kind, Tensor};
 
-use crate::model::ActorCritic;
+use super::model::ActorCritic;
 
 pub struct RolloutBuffer {
     pub obs: Vec<Tensor>,

@@ -1,55 +1,45 @@
-mod agent;
-mod capture;
-mod env;
-mod input;
-mod model;
-mod ppo;
-mod preprocess;
+use ufo50ppo::game;
 
-const OBS_W: u32 = 84;
-const OBS_H: u32 = 84;
+const OBS_W: u32 = 128;
+const OBS_H: u32 = 128;
 const WINDOW_TITLE: &str = "UFO 50";
 
 fn main() -> windows::core::Result<()> {
-    // Pre-load torch_cuda.dll so PyTorch's lazy CUDA init can find it.
-    unsafe {
-        windows::Win32::System::LibraryLoader::LoadLibraryA(windows::core::s!("torch_cuda.dll"))
-            .ok();
-    }
+    game::capture::init()?;
 
-    capture::init()?;
+    let mut input = game::input::Input::new(WINDOW_TITLE)?;
 
-    let input = input::Input::new(WINDOW_TITLE)?;
+    let mut frame_count = 0u32;
+    let mut snap_count = 0u32;
+    let max_snaps = 10;
+    let snap_interval = 180;
 
-    let (frame_tx, frame_rx) = std::sync::mpsc::sync_channel::<env::FrameData>(2);
-    let (action_tx, action_rx) = std::sync::mpsc::channel::<usize>();
+    std::fs::create_dir_all("debug_frames").ok();
 
-    // Spawn training thread
-    std::thread::spawn(move || {
-        agent::training_loop(frame_rx, action_tx, input);
-    });
+    game::capture::run(
+        WINDOW_TITLE,
+        move |crop, frame, reader: &mut game::capture::FrameReader| {
+            if let Err(e) = reader.read_cropped(frame, crop, OBS_W, OBS_H) {
+                eprintln!("read error: {}", e);
+                return true;
+            }
 
-    // Capture loop on main thread — sends frames to training thread
-    capture::run(WINDOW_TITLE, move |frame, reader| {
-        // Wait for action from training thread (blocks until agent decides)
-        let _action = match action_rx.recv() {
-            Ok(a) => a,
-            Err(_) => return false,
-        };
+            if frame_count % snap_interval == 0 {
+                if snap_count >= max_snaps {
+                    println!("Captured {} frames, done.", max_snaps);
+                    input.release_all();
+                    return false;
+                }
+                let path = format!("debug_frames/frame_{:03}.bmp", snap_count);
+                match reader.save_debug_bmp(&path) {
+                    Ok(()) => println!("Saved {} (frame {})", path, frame_count),
+                    Err(e) => eprintln!("Save error: {}", e),
+                }
+                snap_count += 1;
+            }
 
-        // Read pixels at observation resolution
-        let pixels = match reader.read(frame, OBS_W, OBS_H) {
-            Ok(p) => p,
-            Err(_) => return true,
-        };
-
-        let frame_data = env::FrameData {
-            width: OBS_W,
-            height: OBS_H,
-            rgba: pixels.to_vec(),
-        };
-
-        // Send frame to training thread
-        frame_tx.send(frame_data).is_ok()
-    })
+            frame_count += 1;
+            true
+        },
+    )
 }

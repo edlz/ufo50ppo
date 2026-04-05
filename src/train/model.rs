@@ -1,6 +1,6 @@
 use tch::{Device, Kind, Tensor, nn, nn::Module, nn::OptimizerConfig};
 
-use crate::input::NUM_ACTIONS;
+use crate::game::input::NUM_ACTIONS;
 
 pub struct ActorCritic {
     pub vs: nn::VarStore,
@@ -49,7 +49,7 @@ impl ActorCritic {
             ))
             .add_fn(|x| x.relu())
             .add_fn(|x| x.flat_view())
-            .add(nn::linear(root / "fc", 3136, 512, Default::default()))
+            .add(nn::linear(root / "fc", 9216, 512, Default::default()))
             .add_fn(|x| x.relu());
 
         let policy_head = nn::linear(root / "policy", 512, NUM_ACTIONS as i64, Default::default());

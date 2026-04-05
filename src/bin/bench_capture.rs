@@ -32,7 +32,7 @@ fn main() -> windows::core::Result<()> {
 
     game::capture::run(
         WINDOW_TITLE,
-        move |frame, reader: &mut game::capture::FrameReader| {
+        move |crop, frame, reader: &mut game::capture::FrameReader| {
             if size_idx >= SIZES.len() {
                 return false;
             }
@@ -43,7 +43,7 @@ fn main() -> windows::core::Result<()> {
                 start = std::time::Instant::now();
             }
 
-            let _ = reader.read(frame, w, h);
+            let _ = reader.read_cropped(frame, crop, w, h);
             if frame_count == 0 {
                 let path = format!("debug_frames/bench_{}x{}.bmp", w, h);
                 reader.save_debug_bmp(&path).ok();

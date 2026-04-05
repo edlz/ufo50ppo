@@ -9,6 +9,35 @@ use windows::{
     Win32::UI::WindowsAndMessaging::*, core::*,
 };
 
+/// Crop rectangle for extracting client area from a captured window frame.
+#[derive(Clone, Copy)]
+pub struct CropRect {
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
+}
+
+/// Find the title bar height by scanning down x=width/2 for the biggest color jump.
+pub fn detect_border_height(bgra: &[u8], width: u32, height: u32) -> u32 {
+    let scan_x = width / 2; // avoid potential UI elements on the left edge
+    let search_range = height / 10;
+    let mut max_diff = 0u32;
+    let mut max_y = 0u32;
+    for y in 1..search_range {
+        let prev_i = ((y - 1) * width + scan_x) as usize * 4;
+        let curr_i = (y * width + scan_x) as usize * 4;
+        let diff = (bgra[prev_i] as i32 - bgra[curr_i] as i32).unsigned_abs()
+            + (bgra[prev_i + 1] as i32 - bgra[curr_i + 1] as i32).unsigned_abs()
+            + (bgra[prev_i + 2] as i32 - bgra[curr_i + 2] as i32).unsigned_abs();
+        if diff > max_diff {
+            max_diff = diff;
+            max_y = y;
+        }
+    }
+    max_y
+}
+
 fn create_d3d_device() -> Result<(ID3D11Device, ID3D11DeviceContext)> {
     let mut device = None;
     let mut context = None;
@@ -94,6 +123,10 @@ pub struct FrameReader {
     rt: Option<ID3D11Texture2D>,
     rtv: Option<ID3D11RenderTargetView>,
     staging: Option<ID3D11Texture2D>,
+    // Cached crop texture (reused across frames)
+    crop_tex: Option<ID3D11Texture2D>,
+    crop_w: u32,
+    crop_h: u32,
     out_w: u32,
     out_h: u32,
     buf: Vec<u8>,
@@ -144,6 +177,9 @@ impl FrameReader {
             rt: None,
             rtv: None,
             staging: None,
+            crop_tex: None,
+            crop_w: 0,
+            crop_h: 0,
             out_w: 0,
             out_h: 0,
             buf: Vec::new(),
@@ -269,6 +305,158 @@ impl FrameReader {
         Ok(&self.buf)
     }
 
+    /// Read raw pixels from the captured frame without any GPU processing.
+    pub fn read_raw(&mut self, frame: &Direct3D11CaptureFrame) -> Result<(u32, u32, Vec<u8>)> {
+        let surface = frame.Surface()?;
+        let access: IDirect3DDxgiInterfaceAccess = surface.cast()?;
+        let texture: ID3D11Texture2D = unsafe { access.GetInterface()? };
+        let mut desc = D3D11_TEXTURE2D_DESC::default();
+        unsafe { texture.GetDesc(&mut desc) };
+
+        let staging_desc = D3D11_TEXTURE2D_DESC {
+            Usage: D3D11_USAGE_STAGING,
+            BindFlags: 0,
+            CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+            MiscFlags: 0,
+            ..desc
+        };
+        let mut staging = None;
+        unsafe {
+            self.device
+                .CreateTexture2D(&staging_desc, None, Some(&mut staging))?
+        };
+        let staging = staging.unwrap();
+        unsafe { self.context.CopyResource(&staging, &texture) };
+
+        let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+        unsafe {
+            self.context
+                .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?
+        };
+
+        let w = desc.Width as usize;
+        let h = desc.Height as usize;
+        let row_pitch = mapped.RowPitch as usize;
+        let raw = unsafe { std::slice::from_raw_parts(mapped.pData as *const u8, row_pitch * h) };
+
+        let mut pixels = vec![0u8; w * h * 4];
+        for y in 0..h {
+            let src = &raw[y * row_pitch..y * row_pitch + w * 4];
+            pixels[y * w * 4..(y + 1) * w * 4].copy_from_slice(src);
+        }
+        unsafe { self.context.Unmap(&staging, 0) };
+
+        Ok((desc.Width, desc.Height, pixels))
+    }
+
+    /// Like `read`, but first crops the captured frame to the given rect.
+    /// Use with `client_crop_rect()` to exclude window borders.
+    pub fn read_cropped(
+        &mut self,
+        frame: &Direct3D11CaptureFrame,
+        crop: &CropRect,
+        out_w: u32,
+        out_h: u32,
+    ) -> Result<&[u8]> {
+        self.ensure_targets(out_w, out_h)?;
+
+        let surface = frame.Surface()?;
+        let access: IDirect3DDxgiInterfaceAccess = surface.cast()?;
+        let texture: ID3D11Texture2D = unsafe { access.GetInterface()? };
+
+        // Cache crop texture across frames
+        if self.crop_w != crop.w || self.crop_h != crop.h || self.crop_tex.is_none() {
+            let crop_desc = D3D11_TEXTURE2D_DESC {
+                Width: crop.w,
+                Height: crop.h,
+                MipLevels: 1,
+                ArraySize: 1,
+                Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                SampleDesc: DXGI_SAMPLE_DESC {
+                    Count: 1,
+                    Quality: 0,
+                },
+                Usage: D3D11_USAGE_DEFAULT,
+                BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+                CPUAccessFlags: 0,
+                MiscFlags: 0,
+            };
+            let mut tex = None;
+            unsafe {
+                self.device
+                    .CreateTexture2D(&crop_desc, None, Some(&mut tex))?
+            };
+            self.crop_tex = Some(tex.unwrap());
+            self.crop_w = crop.w;
+            self.crop_h = crop.h;
+        }
+        let crop_tex = self.crop_tex.as_ref().unwrap();
+
+        let src_box = D3D11_BOX {
+            left: crop.x,
+            top: crop.y,
+            front: 0,
+            right: crop.x + crop.w,
+            bottom: crop.y + crop.h,
+            back: 1,
+        };
+        unsafe {
+            self.context
+                .CopySubresourceRegion(crop_tex, 0, 0, 0, 0, &texture, 0, Some(&src_box));
+        }
+
+        let mut srv = None;
+        unsafe {
+            self.device
+                .CreateShaderResourceView(crop_tex, None, Some(&mut srv))?
+        };
+        let srv = srv.unwrap();
+
+        let ctx = &self.context;
+        let rtv = self.rtv.as_ref().unwrap();
+        let staging = self.staging.as_ref().unwrap();
+
+        unsafe {
+            ctx.OMSetRenderTargets(Some(&[Some(rtv.clone())]), None);
+            ctx.RSSetViewports(Some(&[D3D11_VIEWPORT {
+                TopLeftX: 0.0,
+                TopLeftY: 0.0,
+                Width: out_w as f32,
+                Height: out_h as f32,
+                MinDepth: 0.0,
+                MaxDepth: 1.0,
+            }]));
+            ctx.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            ctx.VSSetShader(&self.vs, None);
+            ctx.PSSetShader(&self.ps, None);
+            ctx.PSSetShaderResources(0, Some(&[Some(srv)]));
+            ctx.PSSetSamplers(0, Some(&[Some(self.sampler.clone())]));
+            ctx.Draw(3, 0);
+
+            let empty: [Option<ID3D11ShaderResourceView>; 1] = [None];
+            ctx.PSSetShaderResources(0, Some(&empty));
+            ctx.CopyResource(staging, self.rt.as_ref().unwrap());
+        }
+
+        let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+        unsafe { ctx.Map(staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))? };
+
+        let w = out_w as usize;
+        let h = out_h as usize;
+        let row_pitch = mapped.RowPitch as usize;
+        let src = unsafe { std::slice::from_raw_parts(mapped.pData as *const u8, row_pitch * h) };
+
+        self.buf.clear();
+        self.buf.reserve(w * h * 4);
+        for y in 0..h {
+            let row = &src[y * row_pitch..y * row_pitch + w * 4];
+            self.buf.extend_from_slice(row);
+        }
+
+        unsafe { ctx.Unmap(staging, 0) };
+        Ok(&self.buf)
+    }
+
     /// Save current buffer as a BMP file for debugging.
     pub fn save_debug_bmp(&self, path: &str) -> std::io::Result<()> {
         use std::io::Write;
@@ -309,13 +497,12 @@ impl FrameReader {
     }
 }
 
-/// Captures frames from the given window. The callback receives a `FrameReader`
-/// that can optionally be used to read pixels — skip calling `reader.read()` on
-/// frames you don't need to keep the cost near zero.
-/// Return `true` to continue, `false` to stop.
+/// Captures frames from the given window. The callback receives the crop rect,
+/// frame, and reader. Use `reader.read_cropped(frame, crop, w, h)` to get
+/// client-area-only pixels. Return `true` to continue, `false` to stop.
 pub fn run<F>(window_title: &str, on_frame: F) -> Result<()>
 where
-    F: FnMut(&Direct3D11CaptureFrame, &mut FrameReader) -> bool + Send + 'static,
+    F: FnMut(&CropRect, &Direct3D11CaptureFrame, &mut FrameReader) -> bool + Send + 'static,
 {
     let title = format!("{}\0", window_title);
     let hwnd = unsafe { FindWindowA(None, PCSTR(title.as_ptr()))? };
@@ -342,13 +529,46 @@ where
     let mut reader = FrameReader::new(device, context)?;
     let mut on_frame = on_frame;
     let main_thread_id = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() };
+    let mut crop: Option<CropRect> = None;
 
     pool.FrameArrived(&TypedEventHandler::new(
         move |pool: &Option<Direct3D11CaptureFramePool>, _| {
             let pool = pool.as_ref().unwrap();
             let frame = pool.TryGetNextFrame()?;
 
-            let keep_going = on_frame(&frame, &mut reader);
+            // Detect border on first frame by reading raw captured pixels
+            if crop.is_none() {
+                match reader.read_raw(&frame) {
+                    Ok((full_w, full_h, pixels)) => {
+                        let border_h = detect_border_height(&pixels, full_w, full_h);
+                        crop = Some(CropRect {
+                            x: 0,
+                            y: border_h,
+                            w: full_w,
+                            h: full_h - border_h,
+                        });
+                        println!(
+                            "Detected border: {}px, client area: {}x{}",
+                            border_h,
+                            full_w,
+                            full_h - border_h
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("Border detection failed: {}, using no crop", e);
+                        crop = Some(CropRect {
+                            x: 0,
+                            y: 0,
+                            w: 1,
+                            h: 1,
+                        });
+                    }
+                }
+                frame.Close()?;
+                return Ok(());
+            }
+
+            let keep_going = on_frame(crop.as_ref().unwrap(), &frame, &mut reader);
 
             frame.Close()?;
 
