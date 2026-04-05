@@ -49,7 +49,9 @@ impl GameEnv {
         // Send NOOP to unblock the capture callback
         let _ = self.action_tx.send(0);
         let frame = self.frame_rx.recv().expect("capture thread died");
-        let obs = self.frame_stack.push(&frame.rgba, frame.width, frame.height);
+        let obs = self
+            .frame_stack
+            .push(&frame.rgba, frame.width, frame.height);
         self.prev_rgba = Some(frame.rgba);
         obs
     }
@@ -64,7 +66,9 @@ impl GameEnv {
             frame.width,
             frame.height,
         );
-        let obs = self.frame_stack.push(&frame.rgba, frame.width, frame.height);
+        let obs = self
+            .frame_stack
+            .push(&frame.rgba, frame.width, frame.height);
         self.prev_rgba = Some(frame.rgba);
         (obs, reward, done)
     }

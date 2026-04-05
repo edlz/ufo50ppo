@@ -11,6 +11,12 @@ const OBS_H: u32 = 84;
 const WINDOW_TITLE: &str = "UFO 50";
 
 fn main() -> windows::core::Result<()> {
+    // Pre-load torch_cuda.dll so PyTorch's lazy CUDA init can find it.
+    unsafe {
+        windows::Win32::System::LibraryLoader::LoadLibraryA(windows::core::s!("torch_cuda.dll"))
+            .ok();
+    }
+
     capture::init()?;
 
     let input = input::Input::new(WINDOW_TITLE)?;

@@ -1,4 +1,4 @@
-use tch::{Device, Tensor, Kind};
+use tch::{Device, Kind, Tensor};
 
 const STACK_SIZE: i64 = 4;
 const FRAME_SIZE: i64 = 84;
@@ -11,7 +11,10 @@ pub struct FrameStack {
 impl FrameStack {
     pub fn new(device: Device) -> Self {
         Self {
-            buffer: Tensor::zeros([1, STACK_SIZE, FRAME_SIZE, FRAME_SIZE], (Kind::Float, device)),
+            buffer: Tensor::zeros(
+                [1, STACK_SIZE, FRAME_SIZE, FRAME_SIZE],
+                (Kind::Float, device),
+            ),
             count: 0,
         }
     }
@@ -51,7 +54,7 @@ impl FrameStack {
             }
         } else {
             // Shift channels 0..2 ← 1..3, write new frame into channel 3
-            let shifted = self.buffer.narrow(1, 1, STACK_SIZE - 1).shallow_clone();
+            let shifted = self.buffer.narrow(1, 1, STACK_SIZE - 1).copy();
             self.buffer.narrow(1, 0, STACK_SIZE - 1).copy_(&shifted);
             self.buffer.narrow(1, STACK_SIZE - 1, 1).copy_(&frame);
         }

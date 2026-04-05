@@ -1,19 +1,12 @@
 use windows::{
-    core::*,
-    Foundation::TypedEventHandler,
-    Graphics::Capture::*,
-    Graphics::DirectX::*,
-    Graphics::DirectX::Direct3D11::*,
-    Win32::Graphics::Direct3D::*,
-    Win32::Graphics::Direct3D11::*,
-    Win32::Graphics::Direct3D::Fxc::D3DCompile,
+    Foundation::TypedEventHandler, Graphics::Capture::*, Graphics::DirectX::Direct3D11::*,
+    Graphics::DirectX::*, Win32::Foundation::*, Win32::Graphics::Direct3D::Fxc::D3DCompile,
+    Win32::Graphics::Direct3D::*, Win32::Graphics::Direct3D11::*, Win32::Graphics::Dxgi::Common::*,
     Win32::Graphics::Dxgi::*,
-    Win32::Graphics::Dxgi::Common::*,
     Win32::System::WinRT::Direct3D11::CreateDirect3D11DeviceFromDXGIDevice,
     Win32::System::WinRT::Direct3D11::IDirect3DDxgiInterfaceAccess,
     Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop,
-    Win32::Foundation::*,
-    Win32::UI::WindowsAndMessaging::*,
+    Win32::UI::WindowsAndMessaging::*, core::*,
 };
 
 fn create_d3d_device() -> Result<(ID3D11Device, ID3D11DeviceContext)> {
@@ -167,7 +160,10 @@ impl FrameReader {
             MipLevels: 1,
             ArraySize: 1,
             Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
             Usage: D3D11_USAGE_DEFAULT,
             BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
             CPUAccessFlags: 0,
@@ -177,7 +173,10 @@ impl FrameReader {
         unsafe { self.device.CreateTexture2D(&desc, None, Some(&mut rt))? };
         let rt = rt.unwrap();
         let mut rtv = None;
-        unsafe { self.device.CreateRenderTargetView(&rt, None, Some(&mut rtv))? };
+        unsafe {
+            self.device
+                .CreateRenderTargetView(&rt, None, Some(&mut rtv))?
+        };
         let rtv = rtv.unwrap();
 
         let staging_desc = D3D11_TEXTURE2D_DESC {
@@ -187,7 +186,10 @@ impl FrameReader {
             ..desc
         };
         let mut staging = None;
-        unsafe { self.device.CreateTexture2D(&staging_desc, None, Some(&mut staging))? };
+        unsafe {
+            self.device
+                .CreateTexture2D(&staging_desc, None, Some(&mut staging))?
+        };
 
         self.rt = Some(rt);
         self.rtv = Some(rtv);
@@ -212,7 +214,10 @@ impl FrameReader {
         let texture: ID3D11Texture2D = unsafe { access.GetInterface()? };
 
         let mut srv = None;
-        unsafe { self.device.CreateShaderResourceView(&texture, None, Some(&mut srv))? };
+        unsafe {
+            self.device
+                .CreateShaderResourceView(&texture, None, Some(&mut srv))?
+        };
         let srv = srv.unwrap();
 
         let ctx = &self.context;
@@ -249,9 +254,7 @@ impl FrameReader {
         let w = out_w as usize;
         let h = out_h as usize;
         let row_pitch = mapped.RowPitch as usize;
-        let src = unsafe {
-            std::slice::from_raw_parts(mapped.pData as *const u8, row_pitch * h)
-        };
+        let src = unsafe { std::slice::from_raw_parts(mapped.pData as *const u8, row_pitch * h) };
 
         self.buf.clear();
         self.buf.reserve(w * h * 4);

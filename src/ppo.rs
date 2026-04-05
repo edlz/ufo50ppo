@@ -25,7 +25,15 @@ impl RolloutBuffer {
         }
     }
 
-    pub fn push(&mut self, obs: Tensor, action: i64, log_prob: f64, reward: f64, value: f64, done: bool) {
+    pub fn push(
+        &mut self,
+        obs: Tensor,
+        action: i64,
+        log_prob: f64,
+        reward: f64,
+        value: f64,
+        done: bool,
+    ) {
         self.obs.push(obs);
         self.actions.push(action);
         self.log_probs.push(log_prob);
@@ -67,7 +75,11 @@ pub fn compute_gae(
     let mut gae = 0.0;
 
     for t in (0..n).rev() {
-        let next_value = if t == n - 1 { last_value } else { values[t + 1] };
+        let next_value = if t == n - 1 {
+            last_value
+        } else {
+            values[t + 1]
+        };
         let next_non_terminal = if dones[t] { 0.0 } else { 1.0 };
         let delta = rewards[t] + gamma * next_value * next_non_terminal - values[t];
         gae = delta + gamma * lambda * next_non_terminal * gae;
@@ -121,8 +133,12 @@ pub fn update(
     let obs_batch = Tensor::cat(&buffer.obs, 0); // [N, 4, 84, 84]
     let actions_t = Tensor::from_slice(&buffer.actions).to_device(device);
     let old_log_probs_t = Tensor::from_slice(&buffer.log_probs).to_device(device);
-    let advantages_t = Tensor::from_slice(advantages).to_device(device).to_kind(Kind::Float);
-    let returns_t = Tensor::from_slice(returns).to_device(device).to_kind(Kind::Float);
+    let advantages_t = Tensor::from_slice(advantages)
+        .to_device(device)
+        .to_kind(Kind::Float);
+    let returns_t = Tensor::from_slice(returns)
+        .to_device(device)
+        .to_kind(Kind::Float);
 
     // Normalize advantages
     let adv_mean = advantages_t.mean(Kind::Float);

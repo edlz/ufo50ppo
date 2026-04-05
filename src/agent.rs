@@ -12,11 +12,7 @@ const GAE_LAMBDA: f64 = 0.95;
 const LEARNING_RATE: f64 = 2.5e-4;
 const SAVE_INTERVAL: u64 = 10_000;
 
-pub fn training_loop(
-    frame_rx: Receiver<FrameData>,
-    action_tx: Sender<usize>,
-    input: Input,
-) {
+pub fn training_loop(frame_rx: Receiver<FrameData>, action_tx: Sender<usize>, input: Input) {
     let device = Device::cuda_if_available();
     println!("Training on: {:?}", device);
 
@@ -68,7 +64,14 @@ pub fn training_loop(
         );
 
         input.release_all();
-        ppo::update(&mut model, &mut opt, &buffer, &advantages, &returns, &ppo_cfg);
+        ppo::update(
+            &mut model,
+            &mut opt,
+            &buffer,
+            &advantages,
+            &returns,
+            &ppo_cfg,
+        );
         buffer.clear();
 
         if total_steps % SAVE_INTERVAL == 0 {

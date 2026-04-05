@@ -1,7 +1,6 @@
 use windows::{
+    Win32::Foundation::*, Win32::UI::Input::KeyboardAndMouse::*, Win32::UI::WindowsAndMessaging::*,
     core::*,
-    Win32::UI::WindowsAndMessaging::*,
-    Win32::Foundation::*,
 };
 
 const VK_UP: usize = 0x26;
@@ -12,21 +11,21 @@ const VK_Z: usize = 0x5A; // A button
 const VK_X: usize = 0x58; // B button
 
 const ACTION_MAP: &[&[usize]] = &[
-    &[],                        // 0: NOOP
-    &[VK_UP],                   // 1: Up
-    &[VK_DOWN],                 // 2: Down
-    &[VK_LEFT],                 // 3: Left
-    &[VK_RIGHT],                // 4: Right
-    &[VK_Z],                    // 5: A
-    &[VK_X],                    // 6: B
-    &[VK_UP, VK_Z],             // 7: Up + A
-    &[VK_UP, VK_X],             // 8: Up + B
-    &[VK_DOWN, VK_Z],           // 9: Down + A
-    &[VK_LEFT, VK_Z],           // 10: Left + A
-    &[VK_RIGHT, VK_Z],          // 11: Right + A
-    &[VK_LEFT, VK_X],           // 12: Left + B
-    &[VK_RIGHT, VK_X],          // 13: Right + B
-    &[VK_Z, VK_X],              // 14: A + B
+    &[],               // 0: NOOP
+    &[VK_UP],          // 1: Up
+    &[VK_DOWN],        // 2: Down
+    &[VK_LEFT],        // 3: Left
+    &[VK_RIGHT],       // 4: Right
+    &[VK_Z],           // 5: A
+    &[VK_X],           // 6: B
+    &[VK_UP, VK_Z],    // 7: Up + A
+    &[VK_UP, VK_X],    // 8: Up + B
+    &[VK_DOWN, VK_Z],  // 9: Down + A
+    &[VK_LEFT, VK_Z],  // 10: Left + A
+    &[VK_RIGHT, VK_Z], // 11: Right + A
+    &[VK_LEFT, VK_X],  // 12: Left + B
+    &[VK_RIGHT, VK_X], // 13: Right + B
+    &[VK_Z, VK_X],     // 14: A + B
 ];
 
 pub const NUM_ACTIONS: usize = 15;
@@ -36,11 +35,17 @@ pub struct Input {
     held: [bool; 256],
 }
 
+// SAFETY: HWND is a Win32 handle (opaque integer), safe to send across threads.
+unsafe impl Send for Input {}
+
 impl Input {
     pub fn new(window_title: &str) -> Result<Self> {
         let title = format!("{}\0", window_title);
         let hwnd = unsafe { FindWindowA(None, PCSTR(title.as_ptr()))? };
-        Ok(Self { hwnd, held: [false; 256] })
+        Ok(Self {
+            hwnd,
+            held: [false; 256],
+        })
     }
 
     pub fn execute_action(&mut self, action: usize) {
@@ -74,13 +79,11 @@ impl Input {
     fn post_key(&self, vk: usize, up: bool) {
         let msg = if up { WM_KEYUP } else { WM_KEYDOWN };
         // lParam: repeat=1, scancode, extended flag, previous state
-        let scan = unsafe { MapVirtualKeyA(vk as u32, MAP_VIRTUAL_KEY_TYPE(0)) };
+        let scan = unsafe { MapVirtualKeyA(vk as u32, MAPVK_VK_TO_VSC) };
         let mut lparam = 1u32 | (scan << 16);
         if up {
             lparam |= 0xC0000000; // transition + previous state bits
         }
-        let _ = unsafe {
-            PostMessageA(Some(self.hwnd), msg, WPARAM(vk), LPARAM(lparam as isize))
-        };
+        let _ = unsafe { PostMessageA(self.hwnd, msg, WPARAM(vk), LPARAM(lparam as isize)) };
     }
 }
