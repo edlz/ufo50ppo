@@ -1,25 +1,11 @@
+use super::super::{FrameResult, GameTracker};
 use super::NINPEK_SCORE;
 use super::game_over;
 use super::lives;
 use super::rewards;
 use super::score;
-
-pub enum RewardEvent {
-    Survival,
-    ScoreUp,
-    LifeGained,
-    LifeLost,
-    StageComplete,
-    GameComplete,
-    GameOver,
-}
-
-pub struct FrameResult {
-    pub reward: f64,
-    pub event: RewardEvent,
-    pub lives: u32,
-    pub done: bool,
-}
+use crate::platform::win32::input::VK_Z;
+use crate::platform::NUM_ACTIONS;
 
 pub struct NinpekTracker {
     prev_pixels: Vec<u8>,
@@ -60,7 +46,7 @@ impl NinpekTracker {
         }
     }
 
-    pub fn process_frame(&mut self, pixels: &[u8]) -> FrameResult {
+    fn process_frame_inner(&mut self, pixels: &[u8]) -> FrameResult {
         let w = self.width;
 
         // Game over: leaderboard (check first — cheap early exit on most frames)
@@ -68,7 +54,7 @@ impl NinpekTracker {
             if self.game_over_pending {
                 return FrameResult {
                     reward: rewards::GAME_OVER,
-                    event: RewardEvent::GameOver,
+                    event_name: "GAME OVER",
                     lives: 0,
                     done: true,
                 };
@@ -86,7 +72,7 @@ impl NinpekTracker {
             if self.game_complete_pending {
                 return FrameResult {
                     reward: rewards::STAGE_COMPLETE,
-                    event: RewardEvent::GameComplete,
+                    event_name: "WIN",
                     lives: self.committed_lives.unwrap_or(0),
                     done: true,
                 };
@@ -101,7 +87,7 @@ impl NinpekTracker {
                 self.stage_complete_rewarded = true;
                 return FrameResult {
                     reward: rewards::STAGE_COMPLETE,
-                    event: RewardEvent::StageComplete,
+                    event_name: "STAGE",
                     lives: self.committed_lives.unwrap_or(0),
                     done: false,
                 };
@@ -156,11 +142,7 @@ impl NinpekTracker {
         if life_reward != 0.0 {
             return FrameResult {
                 reward: life_reward,
-                event: if life_reward > 0.0 {
-                    RewardEvent::LifeGained
-                } else {
-                    RewardEvent::LifeLost
-                },
+                event_name: if life_reward > 0.0 { "LIFE+" } else { "LIFE-" },
                 lives: curr_lives,
                 done: false,
             };
@@ -214,7 +196,7 @@ impl NinpekTracker {
         if score_reward != 0.0 {
             return FrameResult {
                 reward: score_reward,
-                event: RewardEvent::ScoreUp,
+                event_name: "SCORE",
                 lives: curr_lives,
                 done: false,
             };
@@ -222,9 +204,44 @@ impl NinpekTracker {
 
         FrameResult {
             reward: rewards::SURVIVAL,
-            event: RewardEvent::Survival,
+            event_name: "",
             lives: curr_lives,
             done: false,
         }
+    }
+}
+
+impl GameTracker for NinpekTracker {
+    fn process_frame(&mut self, pixels: &[u8]) -> FrameResult {
+        self.process_frame_inner(pixels)
+    }
+
+    fn is_menu_screen(&self, pixels: &[u8]) -> bool {
+        let w = self.width;
+        game_over::is_leaderboard(pixels, w)
+            || game_over::is_stage_complete(pixels, w)
+            || game_over::is_game_complete(pixels, w)
+            || game_over::is_black_screen(pixels, w, w)
+            || game_over::is_game_menu(pixels, w)
+    }
+
+    fn extra_reset_keys(&self) -> &[usize] {
+        &[VK_Z]
+    }
+
+    fn game_name(&self) -> &str {
+        "ninpek"
+    }
+
+    fn obs_width(&self) -> u32 {
+        self.width
+    }
+
+    fn obs_height(&self) -> u32 {
+        self.width // square observation
+    }
+
+    fn num_actions(&self) -> usize {
+        NUM_ACTIONS
     }
 }

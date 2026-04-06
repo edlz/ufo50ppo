@@ -1,5 +1,6 @@
 use std::sync::mpsc;
 use ufo50ppo::games;
+use ufo50ppo::games::GameTracker;
 use ufo50ppo::platform;
 use ufo50ppo::platform::GameRunner;
 use ufo50ppo::train;
@@ -9,7 +10,6 @@ enum DebugMsg {
     Frame(Vec<u8>),
     NewEpisode(u32),
 }
-const EXTRA_RESET_KEYS: &[usize] = &[platform::win32::input::VK_Z];
 const ROLLOUT_LEN: usize = 256;
 const SAVE_INTERVAL: u64 = 50_000;
 const LEARNING_RATE: f64 = 2.5e-4;
@@ -50,18 +50,25 @@ fn save_checkpoint(
     );
 }
 
-/// Drain frames until a clean gameplay frame appears (skips leaderboard/completion screens).
-fn drain_until_gameplay(runner: &mut dyn GameRunner, total_frames: &mut u64) -> bool {
-    let w = runner.obs_width();
+/// Drain frames until a clean gameplay frame appears.
+fn print_episode_breakdown(scores: u32, life_gained: u32, life_lost: u32, survival: f64) {
+    println!(
+        "  scores: {} | life+: {} | life-: {} | survival: {:.1}",
+        scores, life_gained, life_lost, survival,
+    );
+}
+
+fn drain_until_gameplay(
+    runner: &mut dyn GameRunner,
+    tracker: &dyn GameTracker,
+    total_frames: &mut u64,
+) -> bool {
     loop {
         match runner.next_frame() {
             Ok(pixels) => {
-                runner.execute_action(0); // NOOP while draining
+                runner.execute_action(0);
                 *total_frames += 1;
-                if !games::ninpek::is_leaderboard(&pixels, w)
-                    && !games::ninpek::is_stage_complete(&pixels, w)
-                    && !games::ninpek::is_game_complete(&pixels, w)
-                {
+                if !tracker.is_menu_screen(&pixels) {
                     return true;
                 }
             }
@@ -76,6 +83,7 @@ fn drain_until_gameplay(runner: &mut dyn GameRunner, total_frames: &mut u64) -> 
 struct TrainingConfig {
     max_episodes: Option<u32>,
     max_frames: Option<u64>,
+    debug: bool,
     debug_tx: Option<mpsc::SyncSender<DebugMsg>>,
     checkpoint_dir: String,
     runs_dir: String,
@@ -85,6 +93,7 @@ fn training_thread(mut runner: Box<dyn GameRunner>, cfg: TrainingConfig) {
     let TrainingConfig {
         max_episodes,
         max_frames,
+        debug,
         debug_tx,
         checkpoint_dir,
         runs_dir,
@@ -105,6 +114,10 @@ fn training_thread(mut runner: Box<dyn GameRunner>, cfg: TrainingConfig) {
 
     let mut episode = 0u32;
     let mut episode_reward = 0.0f64;
+    let mut ep_scores = 0u32;
+    let mut ep_life_gained = 0u32;
+    let mut ep_life_lost = 0u32;
+    let mut ep_survival = 0.0f64;
     let mut episode_frames = 0u32;
     let mut total_frames = 0u64;
     let mut update_count = 0u64;
@@ -146,8 +159,8 @@ fn training_thread(mut runner: Box<dyn GameRunner>, cfg: TrainingConfig) {
     const EPISODE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
     // Reset game before starting
-    runner.reset_game(EXTRA_RESET_KEYS);
-    if !drain_until_gameplay(&mut *runner, &mut total_frames) {
+    runner.reset_game(tracker.extra_reset_keys());
+    if !drain_until_gameplay(&mut *runner, &tracker, &mut total_frames) {
         return;
     }
 
@@ -158,6 +171,48 @@ fn training_thread(mut runner: Box<dyn GameRunner>, cfg: TrainingConfig) {
             Err(_) => break,
         };
         t_recv += t0.elapsed();
+
+        // Menu frames: skip model/buffer, but still check for game over via tracker
+        // (leaderboard detection needs 2-frame state in process_frame)
+        if tracker.is_menu_screen(&pixels) {
+            let result = tracker.process_frame(&pixels); // safe: leaderboard check returns early before life/score
+            runner.execute_action(0);
+            total_frames += 1;
+            if result.done {
+                // Game over detected on a menu frame — trigger episode reset
+                let reason = if result.event_name.is_empty() { "DONE" } else { result.event_name };
+                println!(
+                    "\rEpisode {:4} | {} | reward: {:+.1} | frames: {} | total: {} | updates: {}          ",
+                    episode, reason, episode_reward, episode_frames, total_frames, update_count
+                );
+                if debug {
+                    print_episode_breakdown(ep_scores, ep_life_gained, ep_life_lost, ep_survival);
+                }
+                logger.log_episode(total_frames as usize, episode_reward, episode_frames, result.lives);
+                if episode_reward > best_reward {
+                    best_reward = episode_reward;
+                    save_checkpoint(&checkpoint_dir, "best", &model, episode, total_frames, update_count, best_reward);
+                    println!("  New best: {:+.1}", best_reward);
+                }
+                runner.reset_game(tracker.extra_reset_keys());
+                if !drain_until_gameplay(&mut *runner, &tracker, &mut total_frames) { return; }
+                frame_stack.reset();
+                tracker = games::ninpek::NinpekTracker::new(w);
+                episode += 1;
+                if let Some(ref dtx) = debug_tx {
+                    let _ = dtx.try_send(DebugMsg::NewEpisode(episode));
+                }
+                episode_reward = 0.0;
+                episode_frames = 0;
+                ep_scores = 0; ep_life_gained = 0; ep_life_lost = 0; ep_survival = 0.0;
+                episode_start = std::time::Instant::now();
+                buffer.clear();
+                if let Some(max) = max_episodes {
+                    if episode >= max { println!("Reached {} episodes, stopping.", max); break; }
+                }
+            }
+            continue;
+        }
 
         let t1 = std::time::Instant::now();
         let obs = frame_stack.push(&pixels, w, h);
@@ -178,6 +233,14 @@ fn training_thread(mut runner: Box<dyn GameRunner>, cfg: TrainingConfig) {
         episode_reward += reward;
         episode_frames += 1;
         total_frames += 1;
+
+        match result.event_name {
+            "SCORE" => ep_scores += 1,
+            "LIFE+" => ep_life_gained += 1,
+            "LIFE-" => ep_life_lost += 1,
+            "" => ep_survival += reward,
+            _ => {}
+        }
 
         if let Some(max) = max_frames {
             if total_frames >= max {
@@ -276,34 +339,25 @@ fn training_thread(mut runner: Box<dyn GameRunner>, cfg: TrainingConfig) {
             timing_frames = 0;
         }
 
+
         // Live status line
         if episode_frames % 10 == 0 {
-            use games::ninpek::RewardEvent;
-            let event = match result.event {
-                RewardEvent::ScoreUp => "SCORE",
-                RewardEvent::LifeGained => "LIFE+",
-                RewardEvent::LifeLost => "LIFE-",
-                RewardEvent::StageComplete => "STAGE",
-                _ => "",
-            };
             print!(
                 "\rEp {:3} | reward: {:+7.1} | lives: {} | frame: {} | updates: {} | {}     ",
-                episode, episode_reward, result.lives, episode_frames, update_count, event
+                episode, episode_reward, result.lives, episode_frames, update_count, result.event_name
             );
         }
 
         // Episode end
         if done {
-            use games::ninpek::RewardEvent;
-            let reason = match result.event {
-                RewardEvent::GameOver => "GAME OVER",
-                RewardEvent::GameComplete => "WIN",
-                _ => "DONE",
-            };
+            let reason = if result.event_name.is_empty() { "DONE" } else { result.event_name };
             println!(
                 "\rEpisode {:4} | {} | reward: {:+.1} | frames: {} | total: {} | updates: {}          ",
                 episode, reason, episode_reward, episode_frames, total_frames, update_count
             );
+            if debug {
+                print_episode_breakdown(ep_scores, ep_life_gained, ep_life_lost, ep_survival);
+            }
 
             logger.log_episode(
                 total_frames as usize,
@@ -328,21 +382,22 @@ fn training_thread(mut runner: Box<dyn GameRunner>, cfg: TrainingConfig) {
             }
 
             // Signal capture thread to reset game
-            runner.reset_game(EXTRA_RESET_KEYS);
+            runner.reset_game(tracker.extra_reset_keys());
 
-            if !drain_until_gameplay(&mut *runner, &mut total_frames) {
+            if !drain_until_gameplay(&mut *runner, &tracker, &mut total_frames) {
                 return;
             }
 
             // Reset for new episode
             frame_stack.reset();
-            tracker = games::ninpek::NinpekTracker::new(OBS_W);
+            tracker = games::ninpek::NinpekTracker::new(w);
             episode += 1;
             if let Some(ref dtx) = debug_tx {
                 let _ = dtx.try_send(DebugMsg::NewEpisode(episode));
             }
             episode_reward = 0.0;
             episode_frames = 0;
+            ep_scores = 0; ep_life_gained = 0; ep_life_lost = 0; ep_survival = 0.0;
             episode_start = std::time::Instant::now();
 
             if let Some(max) = max_episodes {
@@ -458,6 +513,7 @@ fn main() -> windows::core::Result<()> {
             TrainingConfig {
                 max_episodes: args.max_episodes,
                 max_frames: args.max_frames,
+                debug: args.debug,
                 debug_tx,
                 checkpoint_dir,
                 runs_dir,

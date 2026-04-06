@@ -1,6 +1,10 @@
-/// Detect leaderboard by checking for its structural pattern:
-/// Dense white header at top + repeating white text rows at regular intervals.
+fn valid_buf(bgra: &[u8], width: u32) -> bool {
+    bgra.len() >= (width as usize * width as usize * 4)
+}
+
+/// Detect leaderboard by checking for its structural pattern.
 pub fn is_leaderboard(bgra: &[u8], width: u32) -> bool {
+    if !valid_buf(bgra, width) { return false; }
     let leaderboard_rows: &[u32] = &[5, 6, 19, 20, 28, 29, 38, 39, 47, 48, 57, 58, 66, 67];
     let mut total_white = 0u32;
     let mut rows_with_white = 0u32;
@@ -24,6 +28,7 @@ pub fn is_leaderboard(bgra: &[u8], width: u32) -> bool {
 
 /// Check for the shared completion screen pattern: blue+orange icons + white center text + no HUD.
 fn is_completion_screen(bgra: &[u8], width: u32) -> bool {
+    if !valid_buf(bgra, width) { return false; }
     let mut blue_count = 0u32;
     let mut orange_count = 0u32;
     let mut center_white = 0u32;
@@ -93,4 +98,41 @@ pub fn is_stage_complete(bgra: &[u8], width: u32) -> bool {
 /// Game complete (final stage): completion screen with lots of upper content (>80 pixels)
 pub fn is_game_complete(bgra: &[u8], width: u32) -> bool {
     is_completion_screen(bgra, width) && upper_content(bgra, width) > 80
+}
+
+/// Fully black frame (transition between screens).
+pub fn is_black_screen(bgra: &[u8], width: u32, height: u32) -> bool {
+    if bgra.len() < (width * height * 4) as usize { return false; }
+    let total = (width * height) as usize;
+    let dark = (0..total)
+        .filter(|&i| bgra[i * 4] < 10 && bgra[i * 4 + 1] < 10 && bgra[i * 4 + 2] < 10)
+        .count();
+    dark * 100 / total > 99
+}
+
+/// Game selection menu: colored content in center (y=28-56) but no HUD at top (y=0-20)
+/// and no game world at bottom (y=104+).
+pub fn is_game_menu(bgra: &[u8], width: u32) -> bool {
+    if !valid_buf(bgra, width) { return false; }
+    // Check for center content (menu items)
+    let mut center_content = 0u32;
+    for y in 28..57 {
+        for x in 0..width {
+            let i = (y * width + x) as usize * 4;
+            if bgra[i] > 30 || bgra[i + 1] > 30 || bgra[i + 2] > 30 {
+                center_content += 1;
+            }
+        }
+    }
+    // Check bottom is mostly empty (no game world)
+    let mut bottom_content = 0u32;
+    for y in 104..width.min(128) {
+        for x in 0..width {
+            let i = (y * width + x) as usize * 4;
+            if bgra[i] > 30 || bgra[i + 1] > 30 || bgra[i + 2] > 30 {
+                bottom_content += 1;
+            }
+        }
+    }
+    center_content > 500 && bottom_content < 50
 }

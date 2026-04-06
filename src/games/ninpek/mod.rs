@@ -9,4 +9,4 @@ mod tracker;
 pub use game_over::*;
 pub use lives::*;
 pub use score::NINPEK_SCORE;
-pub use tracker::{FrameResult, NinpekTracker, RewardEvent};
+pub use tracker::NinpekTracker;

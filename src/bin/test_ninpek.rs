@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex};
 use ufo50ppo::games;
+use ufo50ppo::games::GameTracker;
 use ufo50ppo::platform;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
@@ -253,40 +254,16 @@ fn main() -> windows::core::Result<()> {
             let result = tracker.process_frame(&pixels);
             total_reward += result.reward;
 
-            use games::ninpek::RewardEvent;
-            match result.event {
-                RewardEvent::Survival => {}
-                RewardEvent::ScoreUp => println!(
-                    "Frame {:5} | SCORE {:+.1} | total: {:.1} | lives:{}",
-                    frame_count, result.reward, total_reward, result.lives
-                ),
-                RewardEvent::LifeGained => println!(
-                    "Frame {:5} | LIFE+ {:+.1} | total: {:.1} | lives:{}",
-                    frame_count, result.reward, total_reward, result.lives
-                ),
-                RewardEvent::LifeLost => println!(
-                    "Frame {:5} | LIFE- {:+.1} | total: {:.1} | lives:{}",
-                    frame_count, result.reward, total_reward, result.lives
-                ),
-                RewardEvent::StageComplete => println!(
-                    "Frame {:5} | STAGE {:+.1} | total: {:.1}",
-                    frame_count, result.reward, total_reward
-                ),
-                RewardEvent::GameComplete => {
-                    println!(
-                        "Frame {:5} | WIN   {:+.1} | total: {:.1}",
-                        frame_count, result.reward, total_reward
-                    );
-                    return false;
-                }
-                RewardEvent::GameOver => {
-                    reader.save_debug_bmp("debug_frames/game_over.bmp").ok();
-                    println!(
-                        "Frame {:5} | OVER  {:+.1} | total: {:.1}",
-                        frame_count, result.reward, total_reward
-                    );
-                    return false;
-                }
+            if !result.event_name.is_empty() {
+                println!(
+                    "Frame {:5} | {} {:+.1} | total: {:.1} | lives:{}",
+                    frame_count, result.event_name, result.reward, total_reward, result.lives
+                );
+            }
+
+            if result.done {
+                reader.save_debug_bmp("debug_frames/game_over.bmp").ok();
+                return false;
             }
 
             frame_count += 1;
