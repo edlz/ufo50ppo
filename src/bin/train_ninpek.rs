@@ -192,12 +192,7 @@ fn training_thread(mut runner: Box<dyn GameRunner>, cfg: TrainingConfig) {
                 if debug {
                     print_episode_breakdown(ep_scores, ep_life_gained, ep_life_lost, ep_survival);
                 }
-                logger.log_episode(
-                    total_frames as usize,
-                    episode_reward,
-                    episode_frames,
-                    result.lives,
-                );
+                logger.log_episode(total_frames as usize, episode_reward, episode_frames);
                 if episode_reward > best_reward {
                     best_reward = episode_reward;
                     save_checkpoint(
@@ -239,7 +234,7 @@ fn training_thread(mut runner: Box<dyn GameRunner>, cfg: TrainingConfig) {
                         GAMMA,
                         GAE_LAMBDA,
                     );
-                    let _stats = train::ppo::update(
+                    let stats = train::ppo::update(
                         &mut model,
                         &mut opt,
                         &buffer,
@@ -248,6 +243,14 @@ fn training_thread(mut runner: Box<dyn GameRunner>, cfg: TrainingConfig) {
                         &ppo_cfg,
                     );
                     update_count += 1;
+                    logger.log_update(
+                        total_frames as usize,
+                        stats.policy_loss,
+                        stats.value_loss,
+                        stats.entropy,
+                        stats.total_loss,
+                    );
+                    logger.log_learning_rate(total_frames as usize, LEARNING_RATE);
                 }
                 buffer.clear();
                 if let Some(max) = max_episodes {
@@ -413,12 +416,7 @@ fn training_thread(mut runner: Box<dyn GameRunner>, cfg: TrainingConfig) {
                 print_episode_breakdown(ep_scores, ep_life_gained, ep_life_lost, ep_survival);
             }
 
-            logger.log_episode(
-                total_frames as usize,
-                episode_reward,
-                episode_frames,
-                result.lives,
-            );
+            logger.log_episode(total_frames as usize, episode_reward, episode_frames);
 
             // Save best model
             if episode_reward > best_reward {

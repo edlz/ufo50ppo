@@ -38,13 +38,12 @@ impl TbLogger {
         step + self.step_offset
     }
 
-    pub fn log_episode(&mut self, step: usize, reward: f64, length: u32, lives: u32) {
+    pub fn log_episode(&mut self, step: usize, reward: f64, length: u32) {
         let s = self.step(step);
         self.writer
             .add_scalar("rollout/ep_rew_mean", reward as f32, s);
         self.writer
             .add_scalar("rollout/ep_len_mean", length as f32, s);
-        self.writer.add_scalar("rollout/ep_lives", lives as f32, s);
     }
 
     pub fn log_update(
