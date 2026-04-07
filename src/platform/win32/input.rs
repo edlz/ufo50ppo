@@ -3,6 +3,17 @@ use windows::{
     core::*,
 };
 
+const NOOP_FLAG: usize = 1 << 16; // values with this bit set encode a wait, not a key
+
+/// Default per-tap delay used by `reset_game` when a tracker doesn't override it.
+pub const DEFAULT_RESET_TAP_MS: u64 = 25;
+
+/// Encode a wait of `ms` milliseconds as a sentinel value usable in `reset_game` sequences.
+/// Use as `vk_noop(150)` for a 150ms wait inline alongside real VK codes.
+pub const fn vk_noop(ms: u64) -> usize {
+    NOOP_FLAG | ms as usize
+}
+
 pub const VK_UP: usize = 0x26;
 pub const VK_DOWN: usize = 0x28;
 pub const VK_LEFT: usize = 0x25;
@@ -85,13 +96,15 @@ impl Input {
         }
     }
 
-    pub fn reset_game(&mut self, extra_keys: &[usize]) {
+    pub fn reset_game(&mut self, sequence: &[usize], tap_ms: u64) {
         self.release_all();
-        self.tap_key(VK_ESCAPE, 50);
-        self.tap_key(VK_DOWN, 30);
-        self.tap_key(VK_Z, 50);
-        for &vk in extra_keys {
-            self.tap_key(vk, 100);
+        for &vk in sequence {
+            if vk & NOOP_FLAG != 0 {
+                let ms = (vk & 0xFFFF) as u64;
+                std::thread::sleep(std::time::Duration::from_millis(ms));
+            } else {
+                self.tap_key(vk, tap_ms);
+            }
         }
     }
 
@@ -111,5 +124,11 @@ impl Input {
             lparam |= KEYUP_LPARAM;
         }
         let _ = unsafe { PostMessageA(self.hwnd, msg, WPARAM(vk), LPARAM(lparam as isize)) };
+    }
+}
+
+impl Drop for Input {
+    fn drop(&mut self) {
+        self.release_all();
     }
 }

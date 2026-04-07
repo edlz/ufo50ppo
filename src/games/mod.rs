@@ -15,6 +15,7 @@ pub struct FrameResult {
     pub done: bool,
     pub lives: u32,
     pub event_name: &'static str,
+    pub is_event: bool,
 }
 
 /// Game-specific tracker trait. Each game implements this to define
@@ -26,8 +27,13 @@ pub trait GameTracker: Send {
     /// Returns true if this frame is a non-gameplay screen (menu, leaderboard, loading, etc).
     fn is_menu_screen(&self, pixels: &[u8]) -> bool;
 
-    /// Extra keys to press after the standard reset sequence.
-    fn extra_reset_keys(&self) -> &[usize];
+    /// Full reset sequence: keys to tap, with `vk_noop(ms)` for waits between presses.
+    fn reset_sequence(&self) -> &[usize];
+
+    /// Per-tap delay (sleep before keydown and after, before keyup) for the reset sequence.
+    fn reset_tap_ms(&self) -> u64 {
+        crate::platform::win32::input::DEFAULT_RESET_TAP_MS
+    }
 
     /// Game name for logging and checkpoint paths.
     fn game_name(&self) -> &str;
@@ -40,4 +46,12 @@ pub trait GameTracker: Send {
 
     /// Number of discrete actions for this game.
     fn num_actions(&self) -> usize;
+
+    /// Format a per-episode breakdown of game-specific events for debug output.
+    /// Trackers should accumulate counters in `process_frame` and reset them when the
+    /// tracker is rebuilt at episode boundary (via `GameDefinition::make_tracker`).
+    /// Default returns empty string (no breakdown).
+    fn episode_breakdown(&self) -> String {
+        String::new()
+    }
 }

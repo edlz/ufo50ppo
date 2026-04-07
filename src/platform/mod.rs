@@ -2,6 +2,13 @@
 /// Each must implement GameRunner: frame capture, input execution, and game lifecycle.
 pub mod win32;
 
+/// Re-export the platform-appropriate `host` function. Each platform exposes the same
+/// signature: `host(window_title, obs_w, obs_h, train_fn) -> Result<()>`. This lets binaries
+/// stay platform-agnostic — the host owns the threading model (worker thread on Win32,
+/// main thread on Linux).
+#[cfg(target_os = "windows")]
+pub use win32::host;
+
 /// Platform-agnostic interface for running a game.
 /// Combines frame capture, input, and game lifecycle.
 /// On Windows: wraps capture::run callback + Input via channels.
@@ -16,8 +23,9 @@ pub trait GameRunner: Send {
     /// Release all held keys/buttons.
     fn release_all(&mut self);
 
-    /// Reset the game to initial state with optional extra key presses.
-    fn reset_game(&mut self, extra_keys: &[usize]);
+    /// Reset the game by playing the given key sequence (with `vk_noop(ms)` for waits).
+    /// `tap_ms` controls the per-tap delay (sleep before keydown and after, before keyup).
+    fn reset_game(&mut self, sequence: &[usize], tap_ms: u64);
 
     /// Observation width.
     fn obs_width(&self) -> u32;

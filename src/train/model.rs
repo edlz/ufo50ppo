@@ -1,7 +1,5 @@
 use tch::{Device, Kind, Tensor, nn, nn::Module, nn::OptimizerConfig};
 
-use crate::platform::NUM_ACTIONS;
-
 pub struct ActorCritic {
     pub vs: nn::VarStore,
     shared: nn::Sequential,
@@ -9,10 +7,26 @@ pub struct ActorCritic {
     value_head: nn::Linear,
 }
 
+/// Compute the flatten dim for the Nature DQN CNN given the input observation size.
+/// Conv1: kernel=8 stride=4, Conv2: kernel=4 stride=2, Conv3: kernel=3 stride=1, 64 out channels.
+fn nature_dqn_flatten_dim(obs_w: u32, obs_h: u32) -> i64 {
+    let conv_out = |input: u32, kernel: u32, stride: u32| (input - kernel) / stride + 1;
+    let w = conv_out(conv_out(conv_out(obs_w, 8, 4), 4, 2), 3, 1);
+    let h = conv_out(conv_out(conv_out(obs_h, 8, 4), 4, 2), 3, 1);
+    (64 * w * h) as i64
+}
+
 impl ActorCritic {
-    pub fn new(device: Device) -> Self {
+    pub fn new(device: Device, obs_w: u32, obs_h: u32, num_actions: usize) -> Self {
+        assert!(
+            obs_w >= 36 && obs_h >= 36,
+            "Nature DQN CNN requires obs >= 36x36, got {}x{}",
+            obs_w,
+            obs_h
+        );
         let vs = nn::VarStore::new(device);
         let root = &vs.root();
+        let flatten_dim = nature_dqn_flatten_dim(obs_w, obs_h);
 
         let shared = nn::seq()
             .add(nn::conv2d(
@@ -49,10 +63,15 @@ impl ActorCritic {
             ))
             .add_fn(|x| x.relu())
             .add_fn(|x| x.flat_view())
-            .add(nn::linear(root / "fc", 9216, 512, Default::default()))
+            .add(nn::linear(
+                root / "fc",
+                flatten_dim,
+                512,
+                Default::default(),
+            ))
             .add_fn(|x| x.relu());
 
-        let policy_head = nn::linear(root / "policy", 512, NUM_ACTIONS as i64, Default::default());
+        let policy_head = nn::linear(root / "policy", 512, num_actions as i64, Default::default());
         let value_head = nn::linear(root / "value", 512, 1, Default::default());
 
         Self {
@@ -63,7 +82,7 @@ impl ActorCritic {
         }
     }
 
-    /// Returns (log_probs [batch, NUM_ACTIONS], values [batch, 1])
+    /// Returns (log_probs [batch, num_actions], values [batch, 1])
     pub fn forward(&self, obs: &Tensor) -> (Tensor, Tensor) {
         let features = self.shared.forward(obs);
         let log_probs = self

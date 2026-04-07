@@ -6,6 +6,7 @@
 //! Usage: cargo run --release --bin test_train
 
 use tch::{Device, Kind, Tensor};
+use ufo50ppo::platform::NUM_ACTIONS;
 use ufo50ppo::train::model::ActorCritic;
 use ufo50ppo::train::ppo::{self, PpoConfig, RolloutBuffer};
 
@@ -26,16 +27,12 @@ fn step_reward(action: i64) -> (f64, bool) {
 }
 
 fn main() {
-    // Pre-load torch_cuda.dll
-    unsafe {
-        windows::Win32::System::LibraryLoader::LoadLibraryA(windows::core::s!("torch_cuda.dll"))
-            .ok();
-    }
+    ufo50ppo::util::preload_torch_cuda();
 
     let device = Device::cuda_if_available();
     println!("Device: {:?}", device);
 
-    let mut model = ActorCritic::new(device);
+    let mut model = ActorCritic::new(device, 128, 128, NUM_ACTIONS);
     let mut opt = model.optimizer(LEARNING_RATE);
     let mut buffer = RolloutBuffer::new(ROLLOUT_LENGTH);
     let ppo_cfg = PpoConfig {

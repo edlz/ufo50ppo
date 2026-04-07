@@ -5,12 +5,23 @@ use self::input::Input;
 use super::GameRunner;
 use std::sync::mpsc;
 
+/// Run `train_fn` against a Win32-hosted runner. Spawns the training closure on a worker
+/// thread (so the Win32 message pump can own the main thread) and blocks until both finish.
+pub fn host<F>(window_title: &str, obs_w: u32, obs_h: u32, train_fn: F) -> windows::core::Result<()>
+where
+    F: FnOnce(Box<dyn GameRunner>) + Send + 'static,
+{
+    let (runner, main_loop) = Win32Runner::new(window_title, obs_w, obs_h)?;
+    std::thread::spawn(move || train_fn(Box::new(runner)));
+    main_loop()
+}
+
 /// Win32 GameRunner: spawns a capture thread with a message pump,
 /// communicates via channels. Training thread calls next_frame/execute_action.
 pub struct Win32Runner {
     frame_rx: mpsc::Receiver<Vec<u8>>,
     action_tx: mpsc::SyncSender<usize>,
-    reset_tx: mpsc::Sender<Vec<usize>>,
+    reset_tx: mpsc::Sender<(Vec<usize>, u64)>,
     width: u32,
     height: u32,
 }
@@ -29,7 +40,7 @@ impl Win32Runner {
 
         let (frame_tx, frame_rx) = mpsc::sync_channel::<Vec<u8>>(1);
         let (action_tx, action_rx) = mpsc::sync_channel::<usize>(1);
-        let (reset_tx, reset_rx) = mpsc::channel::<Vec<usize>>();
+        let (reset_tx, reset_rx) = mpsc::channel::<(Vec<usize>, u64)>();
 
         let title = window_title.to_string();
         let w = width;
@@ -43,14 +54,9 @@ impl Win32Runner {
             capture::run(
                 &title,
                 move |crop, frame, reader: &mut capture::FrameReader| {
-                    // Check for reset signal (non-blocking)
-                    if let Ok(extra_keys) = reset_rx.try_recv() {
-                        if extra_keys.is_empty() {
-                            input.release_all();
-                        } else {
-                            input.reset_game(&extra_keys);
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    // Check for reset signal (non-blocking). Empty sequence = release-only.
+                    if let Ok((sequence, tap_ms)) = reset_rx.try_recv() {
+                        input.reset_game(&sequence, tap_ms);
                     }
 
                     // Wait for action from training thread
@@ -99,11 +105,11 @@ impl GameRunner for Win32Runner {
     }
 
     fn release_all(&mut self) {
-        let _ = self.reset_tx.send(vec![]);
+        let _ = self.reset_tx.send((vec![], 0));
     }
 
-    fn reset_game(&mut self, extra_keys: &[usize]) {
-        let _ = self.reset_tx.send(extra_keys.to_vec());
+    fn reset_game(&mut self, sequence: &[usize], tap_ms: u64) {
+        let _ = self.reset_tx.send((sequence.to_vec(), tap_ms));
     }
 
     fn obs_width(&self) -> u32 {

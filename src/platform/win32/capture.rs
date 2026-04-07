@@ -125,6 +125,7 @@ pub struct FrameReader {
     staging: Option<ID3D11Texture2D>,
     // Cached crop texture (reused across frames)
     crop_tex: Option<ID3D11Texture2D>,
+    crop_srv: Option<ID3D11ShaderResourceView>,
     crop_w: u32,
     crop_h: u32,
     out_w: u32,
@@ -178,6 +179,7 @@ impl FrameReader {
             rtv: None,
             staging: None,
             crop_tex: None,
+            crop_srv: None,
             crop_w: 0,
             crop_h: 0,
             out_w: 0,
@@ -364,7 +366,7 @@ impl FrameReader {
         let access: IDirect3DDxgiInterfaceAccess = surface.cast()?;
         let texture: ID3D11Texture2D = unsafe { access.GetInterface()? };
 
-        // Cache crop texture across frames
+        // Cache crop texture and its SRV across frames
         if self.crop_w != crop.w || self.crop_h != crop.h || self.crop_tex.is_none() {
             let crop_desc = D3D11_TEXTURE2D_DESC {
                 Width: crop.w,
@@ -386,11 +388,19 @@ impl FrameReader {
                 self.device
                     .CreateTexture2D(&crop_desc, None, Some(&mut tex))?
             };
-            self.crop_tex = Some(tex.unwrap());
+            let tex = tex.unwrap();
+            let mut srv = None;
+            unsafe {
+                self.device
+                    .CreateShaderResourceView(&tex, None, Some(&mut srv))?
+            };
+            self.crop_tex = Some(tex);
+            self.crop_srv = Some(srv.unwrap());
             self.crop_w = crop.w;
             self.crop_h = crop.h;
         }
         let crop_tex = self.crop_tex.as_ref().unwrap();
+        let srv = self.crop_srv.as_ref().unwrap().clone();
 
         let src_box = D3D11_BOX {
             left: crop.x,
@@ -404,13 +414,6 @@ impl FrameReader {
             self.context
                 .CopySubresourceRegion(crop_tex, 0, 0, 0, 0, &texture, 0, Some(&src_box));
         }
-
-        let mut srv = None;
-        unsafe {
-            self.device
-                .CreateShaderResourceView(crop_tex, None, Some(&mut srv))?
-        };
-        let srv = srv.unwrap();
 
         let ctx = &self.context;
         let rtv = self.rtv.as_ref().unwrap();
@@ -538,32 +541,23 @@ where
 
             // Detect border on first frame by reading raw captured pixels
             if crop.is_none() {
-                match reader.read_raw(&frame) {
-                    Ok((full_w, full_h, pixels)) => {
-                        let border_h = detect_border_height(&pixels, full_w, full_h);
-                        crop = Some(CropRect {
-                            x: 0,
-                            y: border_h,
-                            w: full_w,
-                            h: full_h - border_h,
-                        });
-                        println!(
-                            "Detected border: {}px, client area: {}x{}",
-                            border_h,
-                            full_w,
-                            full_h - border_h
-                        );
-                    }
-                    Err(e) => {
-                        eprintln!("Border detection failed: {}, using no crop", e);
-                        crop = Some(CropRect {
-                            x: 0,
-                            y: 0,
-                            w: 1,
-                            h: 1,
-                        });
-                    }
-                }
+                let (full_w, full_h, pixels) = reader.read_raw(&frame).map_err(|e| {
+                    eprintln!("FATAL: border detection read_raw failed: {}", e);
+                    e
+                })?;
+                let border_h = detect_border_height(&pixels, full_w, full_h);
+                crop = Some(CropRect {
+                    x: 0,
+                    y: border_h,
+                    w: full_w,
+                    h: full_h - border_h,
+                });
+                println!(
+                    "Detected border: {}px, client area: {}x{}",
+                    border_h,
+                    full_w,
+                    full_h - border_h
+                );
                 frame.Close()?;
                 return Ok(());
             }
@@ -593,5 +587,7 @@ where
         }
     }
 
+    session.Close().ok();
+    pool.Close().ok();
     Ok(())
 }

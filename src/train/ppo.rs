@@ -42,10 +42,6 @@ impl RolloutBuffer {
         self.dones.push(done);
     }
 
-    pub fn is_full(&self) -> bool {
-        self.obs.len() >= self.capacity
-    }
-
     pub fn len(&self) -> usize {
         self.obs.len()
     }
@@ -88,6 +84,28 @@ pub fn compute_gae(
 
     let returns: Vec<f64> = advantages.iter().zip(values).map(|(a, v)| a + v).collect();
     (advantages, returns)
+}
+
+/// Fraction of the variance in `returns` explained by the value function predictions.
+/// Returns 0.0 when there's not enough data or when returns are constant.
+/// Range typically (-inf, 1.0]; closer to 1.0 means the value head is well-calibrated.
+pub fn explained_variance(values: &[f64], returns: &[f64]) -> f64 {
+    let n = values.len() as f64;
+    if n < 2.0 {
+        return 0.0;
+    }
+    let mean_r = returns.iter().sum::<f64>() / n;
+    let var_r = returns.iter().map(|r| (r - mean_r).powi(2)).sum::<f64>() / n;
+    if var_r < 1e-8 {
+        return 0.0;
+    }
+    let var_diff = values
+        .iter()
+        .zip(returns)
+        .map(|(v, r)| (r - v).powi(2))
+        .sum::<f64>()
+        / n;
+    1.0 - var_diff / var_r
 }
 
 pub struct PpoConfig {
@@ -137,20 +155,22 @@ pub fn update(
     let device = model.vs.device();
     let n = buffer.len() as i64;
 
-    let obs_batch = Tensor::cat(&buffer.obs, 0); // [N, 4, 84, 84]
+    let f32_tensor = |slice: &[f64]| {
+        Tensor::from_slice(slice)
+            .to_device(device)
+            .to_kind(Kind::Float)
+            .detach()
+    };
+
+    let obs_batch = Tensor::cat(&buffer.obs, 0);
     let actions_t = Tensor::from_slice(&buffer.actions).to_device(device);
     // Old log probs must not carry gradients — PPO compares new vs old, not optimizes old
     let old_log_probs_t = Tensor::from_slice(&buffer.log_probs)
         .to_device(device)
         .detach();
-    let advantages_t = Tensor::from_slice(advantages)
-        .to_device(device)
-        .to_kind(Kind::Float)
-        .detach();
-    let returns_t = Tensor::from_slice(returns)
-        .to_device(device)
-        .to_kind(Kind::Float)
-        .detach();
+    let old_values_t = f32_tensor(&buffer.values);
+    let advantages_t = f32_tensor(advantages);
+    let returns_t = f32_tensor(returns);
 
     // Normalize advantages
     let adv_mean = advantages_t.mean(Kind::Float);
@@ -174,10 +194,12 @@ pub fn update(
             let mb_obs = obs_batch.index_select(0, &idx);
             let mb_actions = actions_t.index_select(0, &idx);
             let mb_old_log_probs = old_log_probs_t.index_select(0, &idx);
+            let mb_old_values = old_values_t.index_select(0, &idx);
             let mb_advantages = advantages_t.index_select(0, &idx);
             let mb_returns = returns_t.index_select(0, &idx);
 
             let (new_log_probs, values) = model.forward(&mb_obs);
+            let new_values = values.squeeze_dim(1);
 
             // Gather log probs for the taken actions
             let new_log_probs_a = new_log_probs
@@ -190,10 +212,12 @@ pub fn update(
             let surr2 = ratio.clamp(1.0 - clip_epsilon, 1.0 + clip_epsilon) * &mb_advantages;
             let policy_loss = -surr1.min_other(&surr2).mean(Kind::Float);
 
-            // Value loss
-            let value_loss = (&values.squeeze_dim(1) - &mb_returns)
-                .pow_tensor_scalar(2)
-                .mean(Kind::Float);
+            // Clipped value loss: prevents large value-function moves between updates
+            let v_clipped =
+                &mb_old_values + (&new_values - &mb_old_values).clamp(-clip_epsilon, clip_epsilon);
+            let unclipped = (&new_values - &mb_returns).pow_tensor_scalar(2);
+            let clipped = (&v_clipped - &mb_returns).pow_tensor_scalar(2);
+            let value_loss = unclipped.max_other(&clipped).mean(Kind::Float);
 
             // Entropy bonus
             let entropy = -(new_log_probs.exp() * &new_log_probs)
