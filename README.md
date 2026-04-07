@@ -40,23 +40,22 @@ tensorboard --logdir runs/ninpek
 | `--episodes` | `-e` | Max episodes before stopping |
 | `--frames` | `-f` | Max frames before stopping |
 | `--minutes` | `-m` | Max training time in minutes |
+| `--auto-resume` | `-r` | On episode timeout, reload `latest` and continue instead of exiting |
 | `--debug` | `-d` | Save frames to `debug_frames/ep_NNNN/`, print per-episode reward breakdown |
 
 ## Training Output
 
 ```
 checkpoints/ninpek/{namespace}/
-  latest.safetensors          # most recent model (+ .json metadata)
+  latest.safetensors          # written every 10k frames + on clean exit
   best.safetensors            # highest episode reward
-  update_000042.safetensors   # versioned checkpoints (every 50k frames)
+  frame_00250000.safetensors  # versioned archive every 250k frames
 
 runs/ninpek/{namespace}/
   20260405_143022/            # tensorboard logs (timestamped per run)
 ```
 
-Resuming training automatically loads from `latest.safetensors` and continues from the saved episode/frame/update count.
-
-Episode timeout (60s) rolls back to last versioned checkpoint and exits.
+Resuming automatically loads `latest.safetensors` and continues from the saved episode/frame/update count. With `--auto-resume`, an episode timeout (60s) reloads `latest` and keeps training; without it, the loop exits.
 
 ## Architecture
 
@@ -82,11 +81,11 @@ Two-thread design on Windows (message pump requirement). Training thread uses `G
 | Event | Reward | Detection |
 |-------|--------|-----------|
 | Score increase | +1.0 | B/W pixel flips in score region (quantized, 2-frame stable) |
-| Life gained | +1.0 | Blue pixel slot counting, boundary-only check, 2-frame stable |
-| Life lost | -1.0 | Same as above |
+| Life gained | 0.0 (disabled) | Was duplicating SCORE_UP signal |
+| Life lost | -1.0 | Slot-based, boundary-only check, 2-frame stable |
 | Stage complete | +10.0 | Blue+orange icons + center white text + black screen |
 | Game over | -5.0 | Leaderboard row pattern detection |
-| Survival | +0.001/frame | Always, when no other event |
+| Survival | +0.001/frame | When no other event |
 
 Menu/transition frames (black screens, game selection, leaderboards) are automatically detected and skipped.
 
@@ -107,45 +106,54 @@ Menu/transition frames (black screens, game selection, leaderboards) are automat
 |--------|-------------|
 | `train_ninpek` | PPO training loop for Ninpek |
 | `test_ninpek` | Live reward testing with preview window |
-| `bench_capture` | Capture performance benchmark |
+| `test_reset` | Reset-sequence cycle test for tuning input timings |
 | `test_model` | Model sanity check (no game needed) |
+| `test_train` | PPO smoke test on a synthetic environment |
+| `bench_capture` | Capture+downscale FPS benchmark |
 
 ## Adding a New Game
 
 1. Create `src/games/yourgame/` with tracker, score, lives, game_over, rewards modules
-2. Implement `GameTracker` trait (process_frame, is_menu_screen, extra_reset_keys, config)
-3. Create `src/bin/train_yourgame.rs` — swap `NinpekTracker::new()` for your tracker
-4. All pixel region coordinates are calibrated per resolution (noted in each game's mod.rs)
+2. Implement `GameTracker` trait (process_frame, is_menu_screen, reset_sequence, episode_breakdown, config)
+3. In `src/games/yourgame/mod.rs`, expose `pub fn definition() -> GameDefinition` with window title, obs dims, action count, tracker factory, and per-game hyperparameters
+4. Create `src/bin/train_yourgame.rs` — copy `train_ninpek.rs` and swap `games::ninpek::definition()` for your game's
+5. All pixel region coordinates are calibrated per resolution (noted in each game's mod.rs)
+
+No edits to `train::runner`, `platform::host`, or any shared code.
 
 ## Project Structure
 
 ```
 src/
   platform/
-    mod.rs              # GameRunner trait, NUM_ACTIONS, ACTION_NAMES
+    mod.rs              # GameRunner trait, NUM_ACTIONS, ACTION_NAMES, host re-export
     win32/
-      mod.rs            # Win32Runner (channels + message pump)
+      mod.rs            # Win32Runner + pub fn host (spawns training on worker)
       capture.rs        # D3D11 GPU capture + downscale + border detection
-      input.rs          # 26 discrete actions via PostMessage
+      input.rs          # 26 discrete actions, vk_noop(ms), reset_game
   games/
     mod.rs              # GameTracker trait, FrameResult, Region struct
     ninpek/
-      tracker.rs        # NinpekTracker state machine (implements GameTracker)
+      mod.rs            # pub fn definition() -> GameDefinition
+      tracker.rs        # NinpekTracker state machine
       score.rs          # Score OCR (quantized B/W classification)
       lives.rs          # Slot-based life counting
       game_over.rs      # Leaderboard, stage/game complete, menu detection
       rewards.rs        # Reward value constants
   train/
-    model.rs            # ActorCritic CNN (Nature DQN architecture)
+    model.rs            # ActorCritic CNN (Nature DQN, parameterized over obs dims)
     ppo.rs              # PPO algorithm + RolloutBuffer + UpdateStats
     preprocess.rs       # FrameStack (BGRA -> grayscale tensor)
+    runner.rs           # GameDefinition, Hyperparams, run_training (game-agnostic)
   util/
     cli.rs              # Argument parsing (TrainArgs)
-    checkpoint.rs       # Model save/load with JSON metadata
+    checkpoint.rs       # Model save/load with JSON metadata, try_load helper
     logger.rs           # TensorBoard logging
   bin/
-    train_ninpek.rs     # Training binary
-    test_ninpek.rs      # Reward testing binary
-    bench_capture.rs    # Capture benchmark
+    train_ninpek.rs     # ~50-line shim: definition() + platform::host + run_training
+    test_ninpek.rs      # Reward testing binary with preview window
+    test_reset.rs       # Reset-sequence cycle test
     test_model.rs       # Model sanity check
+    test_train.rs       # PPO smoke test on synthetic env
+    bench_capture.rs    # Capture+downscale FPS benchmark
 ```
