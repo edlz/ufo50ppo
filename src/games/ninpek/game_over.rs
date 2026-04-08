@@ -104,18 +104,6 @@ pub fn is_game_complete(bgra: &[u8], width: u32) -> bool {
     is_completion_screen(bgra, width) && upper_content(bgra, width) > 80
 }
 
-/// Fully black frame (transition between screens).
-pub fn is_black_screen(bgra: &[u8], width: u32, height: u32) -> bool {
-    if bgra.len() < (width * height * 4) as usize {
-        return false;
-    }
-    let total = (width * height) as usize;
-    let dark = (0..total)
-        .filter(|&i| bgra[i * 4] < 10 && bgra[i * 4 + 1] < 10 && bgra[i * 4 + 2] < 10)
-        .count();
-    dark * 100 / total > 99
-}
-
 /// Game selection menu: colored content in center (y=28-56) but no HUD at top (y=0-20)
 /// and no game world at bottom (y=104+).
 pub fn is_game_menu(bgra: &[u8], width: u32) -> bool {

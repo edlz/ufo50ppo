@@ -110,6 +110,62 @@ fn save_checkpoint(
     );
 }
 
+fn write_frame_bmp(path: &str, pixels: &[u8], obs_w: u32, obs_h: u32) {
+    use std::io::Write;
+    let row_bytes = (obs_w * 3 + 3) & !3;
+    let pixel_size = row_bytes * obs_h;
+    let file_size = 54 + pixel_size;
+    let Ok(mut f) = std::fs::File::create(path) else {
+        return;
+    };
+    let _ = f.write_all(b"BM");
+    let _ = f.write_all(&file_size.to_le_bytes());
+    let _ = f.write_all(&0u32.to_le_bytes());
+    let _ = f.write_all(&54u32.to_le_bytes());
+    let _ = f.write_all(&40u32.to_le_bytes());
+    let _ = f.write_all(&(obs_w as i32).to_le_bytes());
+    let _ = f.write_all(&(-(obs_h as i32)).to_le_bytes());
+    let _ = f.write_all(&1u16.to_le_bytes());
+    let _ = f.write_all(&24u16.to_le_bytes());
+    let _ = f.write_all(&0u32.to_le_bytes());
+    let _ = f.write_all(&pixel_size.to_le_bytes());
+    let _ = f.write_all(&[0u8; 16]);
+    let mut row_buf = vec![0u8; row_bytes as usize];
+    for y in 0..obs_h as usize {
+        for x in 0..obs_w as usize {
+            let src = y * obs_w as usize * 4 + x * 4;
+            let dst = x * 3;
+            row_buf[dst] = pixels[src];
+            row_buf[dst + 1] = pixels[src + 1];
+            row_buf[dst + 2] = pixels[src + 2];
+        }
+        let _ = f.write_all(&row_buf);
+    }
+}
+
+fn save_best_frames(
+    dir: &str,
+    episode: u32,
+    episode_reward: f64,
+    frames: &[Vec<u8>],
+    obs_w: u32,
+    obs_h: u32,
+) {
+    let out_dir = format!(
+        "{}/best_ep_{:04}_r{:+}",
+        dir, episode, episode_reward as i64
+    );
+    if std::fs::create_dir_all(&out_dir).is_err() {
+        eprintln!("  Failed to create best frames dir {}", out_dir);
+        return;
+    }
+    for (i, pixels) in frames.iter().enumerate() {
+        let path = format!("{}/{:03}.bmp", out_dir, i);
+        write_frame_bmp(&path, pixels, obs_w, obs_h);
+    }
+    println!("  Saved {} best frames to {}", frames.len(), out_dir);
+}
+
 /// Print the end-of-episode summary line, optionally print the breakdown, log to tensorboard,
 /// and save a `best` checkpoint when episode_reward exceeds best_reward.
 #[allow(clippy::too_many_arguments)]
@@ -260,6 +316,9 @@ pub fn run_training(
     // Pending step (obs, action, log_prob, value) waiting to be paired with the next frame's
     // reward. Standard PPO needs r_{t+1} paired with (s_t, a_t), not r_t.
     let mut prev: Option<(tch::Tensor, i64, f64, f64)> = None;
+    // Periodic frame snapshots (every 20 frames) of the current episode.
+    // Saved as BMPs alongside best.safetensors when a new best episode is reached.
+    let mut best_frames_buf: Vec<Vec<u8>> = Vec::new();
 
     std::fs::create_dir_all(&checkpoint_dir).expect("Failed to create checkpoint directory");
 
@@ -305,6 +364,22 @@ pub fn run_training(
             episode_frames = 0;
             episode_start = std::time::Instant::now();
             prev = None;
+            best_frames_buf.clear();
+        }};
+    }
+
+    macro_rules! maybe_save_best_frames {
+        () => {{
+            if episode_reward > best_reward {
+                save_best_frames(
+                    &checkpoint_dir,
+                    episode,
+                    episode_reward,
+                    &best_frames_buf,
+                    game.obs_width,
+                    game.obs_height,
+                );
+            }
         }};
     }
 
@@ -377,10 +452,13 @@ pub fn run_training(
         };
         t_recv += t0.elapsed();
 
-        if tracker.is_menu_screen(&pixels) {
-            let result = tracker.process_frame(&pixels);
+        let track_start = std::time::Instant::now();
+        let result = tracker.process_frame(&pixels);
+        t_tracker += track_start.elapsed();
+        total_frames += 1;
+
+        if result.is_menu {
             runner.execute_action(0);
-            total_frames += 1;
             if result.is_event || result.done {
                 let pushed = if let Some((p_obs, p_action, p_log_prob, p_value)) = prev.take() {
                     buffer.push(
@@ -408,19 +486,15 @@ pub fn run_training(
                 }
             }
             if result.done {
+                maybe_save_best_frames!();
                 end_episode!(result.event_name);
             }
             continue;
         }
 
-        let track_start = std::time::Instant::now();
-        let result = tracker.process_frame(&pixels);
-        t_tracker += track_start.elapsed();
         let reward = result.reward;
         let done = result.done;
-
         episode_frames += 1;
-        total_frames += 1;
 
         // Pair the previous step's (s, a, log_prob, V) with the reward observed at this frame.
         if let Some((p_obs, p_action, p_log_prob, p_value)) = prev.take() {
@@ -431,6 +505,7 @@ pub fn run_training(
         // Terminal frame: skip the wasted forward pass and go straight to episode reset.
         if done {
             runner.execute_action(0);
+            maybe_save_best_frames!();
             end_episode!(result.event_name);
             continue;
         }
@@ -536,6 +611,9 @@ pub fn run_training(
         }
 
         prev = Some((obs, action, log_prob, value));
+        if episode_frames % 20 == 1 {
+            best_frames_buf.push(pixels.clone());
+        }
 
         if let Some(ref dtx) = debug_tx {
             let suffix = (game.debug_frame_suffix)(result.event_name, reward);

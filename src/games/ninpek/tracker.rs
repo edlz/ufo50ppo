@@ -56,8 +56,14 @@ impl NinpekTracker {
     fn process_frame_inner(&mut self, pixels: &[u8]) -> FrameResult {
         let w = self.width;
 
-        // Game over: leaderboard (check first — cheap early exit on most frames)
-        if game_over::is_leaderboard(pixels, w) {
+        // Compute menu detectors once. Used by the state machines below AND returned in
+        // FrameResult.is_menu so the runner doesn't need a separate is_menu_screen call.
+        let leaderboard = game_over::is_leaderboard(pixels, w);
+        let completion = game_over::is_stage_complete(pixels, w);
+        let game_win = game_over::is_game_complete(pixels, w);
+        let is_menu = leaderboard || completion || game_win || game_over::is_game_menu(pixels, w);
+
+        if leaderboard {
             if self.game_over_pending {
                 return FrameResult {
                     reward: rewards::GAME_OVER,
@@ -65,16 +71,13 @@ impl NinpekTracker {
                     lives: 0,
                     done: true,
                     is_event: true,
+                    is_menu,
                 };
             }
             self.game_over_pending = true;
         } else {
             self.game_over_pending = false;
         }
-
-        // Stage/game complete (shares is_completion_screen, only check once)
-        let completion = game_over::is_stage_complete(pixels, w);
-        let game_win = game_over::is_game_complete(pixels, w);
 
         if game_win {
             if self.game_complete_pending {
@@ -84,6 +87,7 @@ impl NinpekTracker {
                     lives: self.committed_lives.unwrap_or(0),
                     done: true,
                     is_event: true,
+                    is_menu,
                 };
             }
             self.game_complete_pending = true;
@@ -100,6 +104,7 @@ impl NinpekTracker {
                     lives: self.committed_lives.unwrap_or(0),
                     done: false,
                     is_event: true,
+                    is_menu,
                 };
             }
             self.stage_complete_pending = true;
@@ -160,6 +165,7 @@ impl NinpekTracker {
                 lives: curr_lives,
                 done: false,
                 is_event: true,
+                is_menu,
             };
         }
 
@@ -212,6 +218,7 @@ impl NinpekTracker {
                 lives: curr_lives,
                 done: false,
                 is_event: true,
+                is_menu,
             };
         }
 
@@ -221,6 +228,7 @@ impl NinpekTracker {
             lives: curr_lives,
             done: false,
             is_event: false,
+            is_menu,
         }
     }
 }
@@ -250,17 +258,17 @@ impl GameTracker for NinpekTracker {
         game_over::is_leaderboard(pixels, w)
             || game_over::is_stage_complete(pixels, w)
             || game_over::is_game_complete(pixels, w)
-            || game_over::is_black_screen(pixels, w, w)
             || game_over::is_game_menu(pixels, w)
     }
 
     fn reset_sequence(&self) -> &[usize] {
+        // Wait values are empirically tuned: shorter durations race the menu transitions.
         const SEQ: &[usize] = &[
             VK_ESCAPE,
             VK_DOWN,
             VK_Z,
             VK_Z,
-            vk_noop(700),
+            vk_noop(800),
             VK_Z,
             vk_noop(700),
             VK_Z,

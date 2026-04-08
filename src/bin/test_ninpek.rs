@@ -7,7 +7,6 @@ use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::*;
 
-use ufo50ppo::util::{OBS_H, OBS_W, WINDOW_TITLE};
 const SNAP_INTERVAL: u32 = 100;
 
 // Regions from ninpek config
@@ -223,20 +222,31 @@ fn main() -> windows::core::Result<()> {
 
     let preview_hwnd = create_preview_window()?.0 as usize;
 
-    let mut tracker = games::ninpek::NinpekTracker::new(OBS_W);
+    let game = games::ninpek::definition();
+    let obs_w = game.obs_width;
+    let obs_h = game.obs_height;
+    let window_title: String = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| game.window_title.to_string());
+    let mut tracker: Box<dyn GameTracker> = (game.make_tracker)(obs_w);
     let mut total_reward = 0.0;
     let mut frame_count = 0u32;
+    let mut was_menu = false;
+    let mut menu_run_start = 0u32;
 
     std::fs::create_dir_all("debug_frames").ok();
 
-    println!("Testing reward for: Ninpek");
+    println!(
+        "Testing reward for: {} | window: {}",
+        game.name, window_title
+    );
     println!("Preview: red=score, yellow=life");
     println!("Press Ctrl+C to stop.\n");
 
     platform::win32::capture::run(
-        WINDOW_TITLE,
+        &window_title,
         move |crop, frame, reader: &mut platform::win32::capture::FrameReader| {
-            let pixels = match reader.read_cropped(frame, crop, OBS_W, OBS_H) {
+            let pixels = match reader.read_cropped(frame, crop, obs_w, obs_h) {
                 Ok(p) => p.to_vec(),
                 Err(e) => {
                     eprintln!("read error: {}", e);
@@ -249,7 +259,54 @@ fn main() -> windows::core::Result<()> {
                 reader.save_debug_bmp(&path).ok();
             }
 
-            update_preview(&pixels, OBS_W, HWND(preview_hwnd as *mut _));
+            update_preview(&pixels, obs_w, HWND(preview_hwnd as *mut _));
+
+            // Menu detection edge logging — useful for spotting false positives.
+            // True menu sequences last many frames; false positives flash for 1-2.
+            let is_menu = tracker.is_menu_screen(&pixels);
+            if is_menu && !was_menu {
+                let detectors = [
+                    ("leaderboard", games::ninpek::is_leaderboard(&pixels, obs_w)),
+                    (
+                        "stage_complete",
+                        games::ninpek::is_stage_complete(&pixels, obs_w),
+                    ),
+                    (
+                        "game_complete",
+                        games::ninpek::is_game_complete(&pixels, obs_w),
+                    ),
+                    ("game_menu", games::ninpek::is_game_menu(&pixels, obs_w)),
+                ];
+                let active: Vec<&str> = detectors
+                    .iter()
+                    .filter(|(_, fired)| *fired)
+                    .map(|(name, _)| *name)
+                    .collect();
+                println!(
+                    "Frame {:5} | MENU enter | detectors: [{}]",
+                    frame_count,
+                    active.join(", ")
+                );
+                let path = format!("debug_frames/menu_enter_{:05}.bmp", frame_count);
+                reader.save_debug_bmp(&path).ok();
+                menu_run_start = frame_count;
+            } else if !is_menu && was_menu {
+                let run_len = frame_count - menu_run_start;
+                let suspicious = if run_len <= 2 {
+                    " ⚠ FALSE POSITIVE?"
+                } else {
+                    ""
+                };
+                println!(
+                    "Frame {:5} | MENU exit  | lasted {} frames{}",
+                    frame_count, run_len, suspicious
+                );
+                if run_len <= 2 {
+                    let path = format!("debug_frames/menu_falsepos_{:05}.bmp", frame_count);
+                    reader.save_debug_bmp(&path).ok();
+                }
+            }
+            was_menu = is_menu;
 
             let result = tracker.process_frame(&pixels);
             total_reward += result.reward;

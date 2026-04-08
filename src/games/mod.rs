@@ -16,6 +16,7 @@ pub struct FrameResult {
     pub lives: u32,
     pub event_name: &'static str,
     pub is_event: bool,
+    pub is_menu: bool,
 }
 
 /// Game-specific tracker trait. Each game implements this to define
