@@ -23,7 +23,7 @@ fn main() {
         action, log_prob, value
     );
 
-    let mut fs = train::preprocess::FrameStack::new(device);
+    let mut fs = train::preprocess::FrameStack::new(device, 128);
     let fake_bgra = vec![128u8; 128 * 128 * 4];
     let stacked = fs.push(&fake_bgra, 128, 128);
     println!("Frame stack output: {:?}", stacked.size());

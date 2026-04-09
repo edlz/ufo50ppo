@@ -1,30 +1,28 @@
 use tch::{Device, Kind, Tensor};
 
 const STACK_SIZE: i64 = 4;
-const FRAME_SIZE: i64 = 128;
 
 pub struct FrameStack {
-    buffer: Tensor, // [1, 4, FRAME_SIZE, FRAME_SIZE] on device
+    buffer: Tensor,
+    frame_size: i64,
     count: usize,
 }
 
 impl FrameStack {
-    pub fn new(device: Device) -> Self {
+    pub fn new(device: Device, frame_size: u32) -> Self {
+        let fs = frame_size as i64;
         Self {
-            buffer: Tensor::zeros(
-                [1, STACK_SIZE, FRAME_SIZE, FRAME_SIZE],
-                (Kind::Float, device),
-            ),
+            buffer: Tensor::zeros([1, STACK_SIZE, fs, fs], (Kind::Float, device)),
+            frame_size: fs,
             count: 0,
         }
     }
 
-    /// Takes BGRA pixels, converts to grayscale, normalizes, pushes into the frame stack.
     pub fn push(&mut self, bgra: &[u8], width: u32, height: u32) -> Tensor {
         let w = width as usize;
         let h = height as usize;
 
-        // BGRA → grayscale f32 normalized to [0, 1]
+        // BT.601 luma coefficients.
         let mut gray = vec![0f32; w * h];
         for i in 0..w * h {
             let b = bgra[i * 4] as f32;
@@ -37,20 +35,17 @@ impl FrameStack {
             .reshape([1, 1, h as i64, w as i64])
             .to_device(self.buffer.device());
 
-        // Resize to FRAME_SIZE if needed
-        let frame = if h as i64 != FRAME_SIZE || w as i64 != FRAME_SIZE {
-            frame.upsample_bilinear2d([FRAME_SIZE, FRAME_SIZE], false, None, None)
+        let frame = if h as i64 != self.frame_size || w as i64 != self.frame_size {
+            frame.upsample_bilinear2d([self.frame_size, self.frame_size], false, None, None)
         } else {
             frame
         };
 
         if self.count == 0 {
-            // Fill all 4 channels with the first frame
             for i in 0..STACK_SIZE {
                 self.buffer.narrow(1, i, 1).copy_(&frame);
             }
         } else {
-            // Shift channels 0..2 ← 1..3, write new frame into channel 3
             let shifted = self.buffer.narrow(1, 1, STACK_SIZE - 1).copy();
             self.buffer.narrow(1, 0, STACK_SIZE - 1).copy_(&shifted);
             self.buffer.narrow(1, STACK_SIZE - 1, 1).copy_(&frame);

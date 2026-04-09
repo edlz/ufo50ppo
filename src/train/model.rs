@@ -1,4 +1,4 @@
-use tch::{Device, Kind, Tensor, nn, nn::Module, nn::OptimizerConfig};
+use tch::{Device, Kind, Tensor, nn, nn::Module};
 
 pub struct ActorCritic {
     pub vs: nn::VarStore,
@@ -82,7 +82,6 @@ impl ActorCritic {
         }
     }
 
-    /// Returns (log_probs [batch, num_actions], values [batch, 1])
     pub fn forward(&self, obs: &Tensor) -> (Tensor, Tensor) {
         let features = self.shared.forward(obs);
         let log_probs = self
@@ -93,7 +92,6 @@ impl ActorCritic {
         (log_probs, values)
     }
 
-    /// Sample an action. Returns (action_index, log_prob, value).
     pub fn act(&self, obs: &Tensor) -> (i64, f64, f64) {
         tch::no_grad(|| {
             let (log_probs, values) = self.forward(obs);
@@ -105,7 +103,26 @@ impl ActorCritic {
         })
     }
 
-    pub fn optimizer(&self, lr: f64) -> nn::Optimizer {
-        nn::Adam::default().build(&self.vs, lr).unwrap()
+    pub fn act_batch(&self, obs: &Tensor) -> (Vec<i64>, Vec<f64>, Vec<f64>) {
+        tch::no_grad(|| {
+            let (log_probs, values) = self.forward(obs);
+            let probs = log_probs.exp();
+            let actions = probs.multinomial(1, true); // [N, 1]
+            let n = obs.size()[0];
+            let mut a_vec = Vec::with_capacity(n as usize);
+            let mut lp_vec = Vec::with_capacity(n as usize);
+            let mut v_vec = Vec::with_capacity(n as usize);
+            for i in 0..n {
+                let a = actions.int64_value(&[i, 0]);
+                a_vec.push(a);
+                lp_vec.push(log_probs.double_value(&[i, a]));
+                v_vec.push(values.double_value(&[i, 0]));
+            }
+            (a_vec, lp_vec, v_vec)
+        })
+    }
+
+    pub fn optimizer(&self, lr: f64) -> super::adam::Adam {
+        super::adam::Adam::new(&self.vs, lr)
     }
 }

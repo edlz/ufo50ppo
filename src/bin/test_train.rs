@@ -69,6 +69,7 @@ fn main() {
             last_value,
             GAMMA,
             GAE_LAMBDA,
+            1.0,
         );
 
         ppo::update(

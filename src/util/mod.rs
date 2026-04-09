@@ -1,14 +1,11 @@
+pub mod bmp;
 pub mod checkpoint;
 pub mod cli;
 pub mod logger;
+pub mod shutdown;
 
-pub const WINDOW_TITLE: &str = "UFO 50";
-pub const OBS_W: u32 = 128;
-pub const OBS_H: u32 = 128;
-
-/// Pre-load `torch_cuda.dll` so tch's lazy CUDA init succeeds. No-op on failure.
-/// Windows-only — required because tch loads CUDA libraries lazily and Windows
-/// won't search the libtorch directory unless something forces it onto the loader path.
+/// Forces `torch_cuda.dll` onto the loader path. tch loads CUDA libraries lazily
+/// and Windows won't search the libtorch directory without this nudge.
 #[cfg(target_os = "windows")]
 pub fn preload_torch_cuda() {
     unsafe {

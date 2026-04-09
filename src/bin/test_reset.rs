@@ -1,5 +1,5 @@
+use ufo50ppo::games::ninpek::WINDOW_TITLE;
 use ufo50ppo::platform::win32::input::{Input, VK_DOWN, VK_ESCAPE, VK_Z, vk_noop};
-use ufo50ppo::util::WINDOW_TITLE;
 
 fn main() -> windows::core::Result<()> {
     let n: u32 = std::env::args()

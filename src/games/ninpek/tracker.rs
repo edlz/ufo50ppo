@@ -36,10 +36,15 @@ impl NinpekTracker {
         self.last_mem_lives
     }
 
-    pub fn new(width: u32) -> Self {
-        let mem_reader = MemReader::new(super::WINDOW_TITLE)
-            .unwrap_or_else(|e| panic!("MemReader::new failed: {}", e));
-        println!("[mem] attached to ufo50.exe");
+    pub fn new(width: u32, pid: u32) -> Self {
+        let mem_reader = if pid != 0 {
+            MemReader::for_pid(pid)
+                .unwrap_or_else(|e| panic!("MemReader::for_pid({}) failed: {}", pid, e))
+        } else {
+            MemReader::new(super::WINDOW_TITLE)
+                .unwrap_or_else(|e| panic!("MemReader::new failed: {}", e))
+        };
+        println!("[mem] attached to ufo50.exe (pid={})", pid);
         Self {
             mem_reader,
             last_mem_score: None,
@@ -56,8 +61,6 @@ impl NinpekTracker {
         }
     }
 
-    /// Read score and lives from process memory and update cached values. Returns
-    /// `(prev_score, prev_lives)` so callers that care about deltas can compute them.
     fn refresh_mem_state(&mut self) -> (Option<u64>, Option<u64>) {
         let prev = (self.last_mem_score, self.last_mem_lives);
         let (score, lives) = self.mem_reader.read_both();
@@ -71,8 +74,13 @@ impl NinpekTracker {
         let (prev_score, prev_lives) = self.refresh_mem_state();
 
         let leaderboard = game_over::is_leaderboard(pixels, w);
-        let completion = !leaderboard && game_over::is_stage_complete(pixels, w);
-        let game_win = !leaderboard && !completion && game_over::is_game_complete(pixels, w);
+        let completion_kind = if leaderboard {
+            None
+        } else {
+            game_over::classify_completion(pixels, w)
+        };
+        let completion = completion_kind == Some(game_over::CompletionKind::Stage);
+        let game_win = completion_kind == Some(game_over::CompletionKind::Game);
         let is_menu = leaderboard || completion || game_win;
 
         let score_delta = match (prev_score, self.last_mem_score) {
@@ -240,7 +248,8 @@ impl GameTracker for NinpekTracker {
     }
 
     fn obs_height(&self) -> u32 {
-        self.width // square observation
+        // game_over.rs assumes height == width.
+        self.width
     }
 
     fn num_actions(&self) -> usize {

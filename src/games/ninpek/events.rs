@@ -1,6 +1,4 @@
-//! Event name constants returned by `NinpekTracker::process_frame` in `FrameResult.event_name`.
-//! Centralized here so producers (the tracker) and consumers (the wrapper match,
-//! `ninpek_debug_suffix`) reference the same string. A typo at any site is now a compile error.
+//! Event name constants — referenced by producer and consumers so typos are compile errors.
 
 pub const SCORE: &str = "SCORE";
 pub const LIFE_GAINED: &str = "LIFE+";

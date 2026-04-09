@@ -1,63 +1,78 @@
 # ufo50ppo
 
-PPO reinforcement learning agent that learns to play [UFO 50](https://50games.fun/) games by capturing the screen and sending keyboard inputs. Windows-only (Linux-portable architecture).
-
-Currently trains on **Ninpek** (game 3). Score and lives are read directly from `ufo50.exe` process memory via pointer chains; stage completion and game over are detected from the captured frame pixels.
+PPO reinforcement learning agent that learns to play [UFO 50](https://50games.fun/) games by capturing the screen and sending keyboard inputs. Windows-only (Linux-portable architecture). The training pipeline is game-agnostic; per-game logic (reward signals, reset sequences, scene detection) lives in `src/games/<name>/`.
 
 ## Requirements
 
-- **Windows 10/11**
-- **Rust** (edition 2024)
+- **Windows 10/11**, ≥16 GB RAM recommended for multi-env training
+- **Rust** ≥ 1.85 (edition 2024)
 - **libtorch** — set `LIBTORCH` env var to your libtorch path, add `lib/` to `PATH`
   - Set `LIBTORCH_BYPASS_VERSION_CHECK=1` if version mismatch
-- **UFO 50** running with window title "UFO 50"
+  - CUDA strongly recommended; the trainer prints a loud warning at startup if it falls back to CPU
+- **UFO 50** running with window title "UFO 50" (one window per env for multi-env)
 
 ## Quick Start
 
 ```bash
-# Train Ninpek
-cargo run --release --bin train_ninpek
+# Single-env training (default namespace)
+cargo run --release
 
-# Train with namespace (separate experiment)
-cargo run --release --bin train_ninpek -- -n experiment1
+# Multi-env training: launch N UFO 50 windows first, then
+cargo run --release -- -N 4 -n exp4 -r
 
-# Train with limits (whichever comes first)
-cargo run --release --bin train_ninpek -- -e 100 -f 500000
-cargo run --release --bin train_ninpek -- -m 60
+# Custom namespace
+cargo run --release -- -n experiment1
 
-# Debug mode (saves frames + reward breakdown)
-cargo run --release --bin train_ninpek -- -d
+# Train with limits (whichever fires first)
+cargo run --release -- -e 100 -f 500000
+cargo run --release -- -m 60
+
+# Debug mode (saves frames + reward breakdown — single-env only)
+cargo run --release -- -d
 
 # View training progress
-tensorboard --logdir runs/ninpek
+tensorboard --logdir runs/<game>
 ```
+
+`cargo run` (no `--bin`) is the training entry point; the `main` binary lives in `src/main.rs` and dispatches to either the single-env or multi-env trainer based on `-N`.
 
 ## CLI Flags
 
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--namespace` | `-n` | Training namespace (default: "default") |
+| `--num-envs` | `-N` | Number of parallel game instances (default: 1). Requires N existing UFO 50 windows. |
 | `--episodes` | `-e` | Max episodes before stopping |
 | `--frames` | `-f` | Max frames before stopping |
 | `--minutes` | `-m` | Max training time in minutes |
-| `--auto-resume` | `-r` | On episode timeout, reload `latest` and continue instead of exiting |
-| `--debug` | `-d` | Save frames to `debug_frames/ep_NNNN/`, print per-episode reward breakdown |
+| `--auto-resume` | `-r` | Single-env: reload `latest` on drain timeout. Multi-env: dead-env detection takes the place of reload-and-retry. |
+| `--debug` | `-d` | Save frames to `debug_frames/ep_NNNN/`, print per-episode reward breakdown (single-env only) |
+
+Press **Ctrl+C** at any time to save a final checkpoint and exit cleanly.
 
 ## Training Output
 
 ```
-checkpoints/ninpek/{namespace}/
-  latest.safetensors          # written every 10k frames + on clean exit
+checkpoints/<game>/<namespace>/
+  latest.safetensors          # weights — written every 10k frames + on clean exit
+  latest.adam                 # Adam optimizer state (m, v, step) — same cadence
+  latest.json                 # CheckpointMeta + reward normalizer state
   best.safetensors            # highest episode reward
   frame_00250000.safetensors  # versioned archive every 250k frames
+  run_metadata.jsonl          # one line per training run start (git hash, hyperparams)
 
-runs/ninpek/{namespace}/
+runs/<game>/<namespace>/
   20260405_143022/            # tensorboard logs (timestamped per run)
 ```
 
-Resuming automatically loads `latest.safetensors` and continues from the saved episode/frame/update count. With `--auto-resume`, an episode timeout (60s) reloads `latest` and keeps training; without it, the loop exits.
+Resuming reads `latest.{safetensors,adam,json}` and continues from the saved episode/frame/update count, **with full optimizer momentum and reward normalizer state preserved** — there's no Adam warmup or normalizer relearning across restarts.
 
 ## Architecture
+
+The codebase has two trainers that share everything except the per-env loop:
+
+- **Single-env** — `run_training` in `src/train/runner.rs`. Two-thread model: capture pump on the main thread (Win32 message pump requirement), training on a worker thread, mpsc channels between.
+- **Multi-env (sync)** — `run_training_multi` in `src/train/multi.rs`. N capture pump threads + 1 trainer thread. The trainer uses `next_frame_timeout(2s)` as a sync barrier across all alive envs each tick, runs **one** batched inference call (`act_batch`), dispatches actions, and runs PPO updates when all alive envs have filled their per-env buffer. Dead envs (frame timeout, drain timeout, tracker panic) are dropped from the inference batch and the PPO gate. Trainer exits when all envs are dead.
 
 ```
 ┌─────────────────────────────────────┐
@@ -65,98 +80,71 @@ Resuming automatically loads `latest.safetensors` and continues from the saved e
 │  GameRunner trait + Win32 impl      │
 │  Capture (D3D11) + Input (PostMsg)  │
 └──────────────┬──────────────────────┘
-               │ GameRunner::next_frame() / execute_action()
+               │ GameRunner::next_frame() / execute_action() / pid()
 ┌──────────────┴──────────────────────┐
-│  Training Layer (platform-agnostic) │
+│  Training Layer (game-agnostic)     │
 │  FrameStack → ActorCritic → PPO    │
+│  Custom Adam (persistent state)     │
+│  RunningMeanStd reward normalization│
 │  GameTracker (per-game rewards)     │
-│  Checkpoints + TensorBoard          │
+│  Atomic checkpoints + TensorBoard   │
 └─────────────────────────────────────┘
 ```
 
-Two-thread design on Windows (message pump requirement). Training thread uses `GameRunner` trait only — no platform-specific code. Linux port requires implementing `GameRunner` with X11/PipeWire + uinput.
+In multi-env, `host_multi` enumerates all matching game windows, spawns one capture pump per window on its own thread, and passes a `Vec<(WindowInfo, Box<dyn GameRunner>)>` to the trainer. Each tracker is constructed with its env's specific PID so any process-memory readers attach to the right game process.
 
-## Reward System (Ninpek)
+## Reward Pipeline
 
-| Event | Reward | Detection |
-|-------|--------|-----------|
-| Score increase | +1.0 per 50 points | Score delta from process memory |
-| Life gained | +1.0 | Lives delta from process memory |
-| Life lost | -1.0 | Lives delta from process memory |
-| Stage complete | +10.0 | Stage-clear screen pixel pattern (2-frame stable) |
-| Game won (final stage) | +10.0 | Game-complete screen pixel pattern (2-frame stable) |
-| Game over | -5.0 | Leaderboard row pattern (2-frame stable) |
-| Survival | +0.001/frame | When no other event |
+Per-game `GameTracker` impls emit `FrameResult { reward, done, event_name, is_menu, ... }` per frame. The trainer adds **reward normalization** (`RunningMeanStd`, Welford) on top: each reward is divided by the running std of the discounted return before GAE, stabilizing training across reward distribution shifts. The normalizer state persists across resumes via `latest.json`.
 
-Score (`+0xD0`) and lives (`+0x4C0`) are read from a Game Maker RValue pair on the same object via a shared pointer-chain prefix off `ufo50.exe+0x00742230`. After a reset the tracker waits for `score == 0 && lives == 3` (`observe_idle`) before handing the episode to PPO, so menu animations and the previous run's state never leak into training.
-
-Menu/transition frames (leaderboards, stage-complete, game-complete) are still detected from pixels and excluded from PPO updates via `is_menu`.
+Trackers can read game state via pixel detectors (`game_over.rs`-style scene matching) or via process memory (`MemReader` + Cheat Engine pointer chains, see `ninpek/mem.rs` for an example). `observe_idle` lets a tracker block the post-reset drain until the game is back in a fresh playable state. `is_menu` marks frames that should be skipped from the PPO rollout.
 
 ## TensorBoard Metrics
 
 | Metric | Description |
 |--------|-------------|
-| `rollout/ep_rew_mean` | Episode reward |
+| `rollout/ep_rew_mean` | Episode reward (aggregate across envs in multi-env) |
 | `rollout/ep_len_mean` | Episode length (frames) |
+| `rollout/ep_rew_min` / `ep_rew_max` | Per-tick spread across envs (multi-env only) |
+| `rollout/env_{i}/ep_rew_mean` | Per-env episode reward (multi-env only) |
 | `train/policy_loss` | PPO clipped surrogate loss |
-| `train/value_loss` | Value function MSE |
+| `train/value_loss` | Clipped value function MSE |
 | `train/entropy` | Policy entropy |
+| `train/grad_norm` | Pre-clip gradient L2 norm — diagnostic for value function divergence |
+| `train/explained_variance` | Fraction of return variance explained by V — should climb above 0.5 |
+| `train/learning_rate` | LR (constant unless you change it) |
 | `time/fps` | Training throughput |
+
+## Production-readiness features
+
+- **Atomic checkpoint writes** — weights, Adam state, and metadata each go through `.tmp` + rename. Crash mid-save can't corrupt the existing checkpoint. Stale `.tmp` files from prior crashes are swept at startup.
+- **Persistent Adam state** — custom Adam optimizer (`src/train/adam.rs`) with `save_state` / `load_state`. Resumes preserve `m`, `v`, and step counter exactly. **9 unit tests** verify the math.
+- **Reward normalizer persistence** — running mean/var/count saved in `latest.json`, restored on resume. **6 unit tests** including the count<2 edge case.
+- **Per-env panic safety** (multi-env) — tracker panics in `process_frame` / `observe_idle` are caught with `catch_unwind`. The offending env is marked dead and the trainer continues with survivors.
+- **NaN guards** — PPO update skips minibatches with non-finite loss or gradient instead of propagating to the optimizer.
+- **CUDA detection warning** — startup prints a loud warning if `cuda_if_available` returns CPU.
+- **Ctrl+C graceful shutdown** — Win32 console handler flips a static flag; trainer saves a final checkpoint and exits.
+- **Save-failure escalation** — `save_checkpoint` tracks consecutive failures across the process; after 3 in a row it triggers shutdown so unattended runs don't silently lose hours of work.
+- **Run metadata** — every trainer startup appends a JSON line to `run_metadata.jsonl` with git hash, dirty flag, hyperparam snapshot, and start time.
 
 ## Binaries
 
 | Binary | Description |
 |--------|-------------|
-| `train_ninpek` | PPO training loop for Ninpek |
-| `test_ninpek` | Live reward testing with preview window |
+| `ufo50ppo` (default, `cargo run --release`) | PPO training entry — single or multi-env via `-N` |
+| `test_ninpek` | Live reward testing for Ninpek (single-env diagnostic) |
 | `test_reset` | Reset-sequence cycle test for tuning input timings |
 | `test_model` | Model sanity check (no game needed) |
 | `test_train` | PPO smoke test on a synthetic environment |
+| `test_multi_capture` | Multi-env capture-only smoke test (no training) |
 | `bench_capture` | Capture+downscale FPS benchmark |
 
 ## Adding a New Game
 
-1. Create `src/games/yourgame/` with tracker, score, lives, game_over, rewards modules
-2. Implement `GameTracker` trait (process_frame, observe_idle, reset_sequence, episode_breakdown, obs/action dims)
-3. In `src/games/yourgame/mod.rs`, expose `pub fn definition() -> GameDefinition` with window title, obs dims, action count, tracker factory, and per-game hyperparameters
-4. Create `src/bin/train_yourgame.rs` — copy `train_ninpek.rs` and swap `games::ninpek::definition()` for your game's
-5. All pixel region coordinates are calibrated per resolution (noted in each game's mod.rs)
+1. Create `src/games/yourgame/` with at minimum: `mod.rs`, `tracker.rs`, `rewards.rs`, `events.rs` (event-name constants). Add `mem.rs` if you have process-memory pointer chains; add `game_over.rs` (or similar) if you need pixel-based scene detection.
+2. Implement `GameTracker` for `YourGameTracker`. Required: `process_frame`, `reset_sequence`, `game_name`, `obs_width`, `obs_height`, `num_actions`. Optional overrides: `observe_idle` (default `true` — set this if you have a fresh-state check), `reset_episode` (default no-op), `reset_tap_ms` (default 25 ms), `episode_breakdown` (default empty).
+3. In `src/games/yourgame/mod.rs`, expose `pub const WINDOW_TITLE: &str = "..."` and `pub fn definition() -> GameDefinition` with the title, obs dims, action count, tracker factory `fn(width: u32, pid: u32) -> Box<dyn GameTracker>`, hyperparameters, and `debug_frame_suffix`. The factory's `pid` argument is the OS process ID of the env's game window — pass it through to `MemReader::for_pid(pid)` if you read process memory; ignore it otherwise.
+4. Edit `src/main.rs` to use `games::yourgame::definition()` instead of `games::ninpek::definition()` (or add a CLI flag to switch games).
+5. Pixel detectors should be calibrated against a reference obs resolution and scaled at runtime — see `ninpek/game_over.rs` for the `s_x` / `s_y` / `s_count` pattern. The helpers are private to each game.
 
-No edits to `train::runner`, `platform::host`, or any shared code.
-
-## Project Structure
-
-```
-src/
-  platform/
-    mod.rs              # GameRunner trait, NUM_ACTIONS, ACTION_NAMES, host re-export
-    win32/
-      mod.rs            # Win32Runner + pub fn host (spawns training on worker)
-      capture.rs        # D3D11 GPU capture + downscale + border detection
-      input.rs          # 26 discrete actions, vk_noop(ms), reset_game
-  games/
-    mod.rs              # GameTracker trait, FrameResult, Region struct
-    ninpek/
-      mod.rs            # pub fn definition() -> GameDefinition
-      tracker.rs        # NinpekTracker state machine
-      mem.rs            # Process memory reader (score + lives via pointer chain)
-      game_over.rs      # Leaderboard, stage/game complete pixel detection
-      events.rs         # Event-name string constants shared by tracker + debug
-      rewards.rs        # Reward value constants
-  train/
-    model.rs            # ActorCritic CNN (Nature DQN, parameterized over obs dims)
-    ppo.rs              # PPO algorithm + RolloutBuffer + UpdateStats
-    preprocess.rs       # FrameStack (BGRA -> grayscale tensor)
-    runner.rs           # GameDefinition, Hyperparams, run_training (game-agnostic)
-  util/
-    cli.rs              # Argument parsing (TrainArgs)
-    checkpoint.rs       # Model save/load with JSON metadata, try_load helper
-    logger.rs           # TensorBoard logging
-  bin/
-    train_ninpek.rs     # ~50-line shim: definition() + platform::host + run_training
-    test_ninpek.rs      # Reward testing binary with preview window
-    test_reset.rs       # Reset-sequence cycle test
-    test_model.rs       # Model sanity check
-    test_train.rs       # PPO smoke test on synthetic env
-    bench_capture.rs    # Capture+downscale FPS benchmark
-```
+No edits to `train::runner`, `train::multi`, `platform::host`, or any other shared code.

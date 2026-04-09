@@ -2,7 +2,7 @@ use windows::{
     Foundation::TypedEventHandler, Graphics::Capture::*, Graphics::DirectX::Direct3D11::*,
     Graphics::DirectX::*, Win32::Foundation::*, Win32::Graphics::Direct3D::Fxc::D3DCompile,
     Win32::Graphics::Direct3D::*, Win32::Graphics::Direct3D11::*, Win32::Graphics::Dxgi::Common::*,
-    Win32::Graphics::Dxgi::*,
+    Win32::Graphics::Dxgi::*, Win32::Graphics::Gdi::ClientToScreen,
     Win32::System::WinRT::Direct3D11::CreateDirect3D11DeviceFromDXGIDevice,
     Win32::System::WinRT::Direct3D11::IDirect3DDxgiInterfaceAccess,
     Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop,
@@ -18,24 +18,22 @@ pub struct CropRect {
     pub h: u32,
 }
 
-/// Find the title bar height by scanning down x=width/2 for the biggest color jump.
-pub fn detect_border_height(bgra: &[u8], width: u32, height: u32) -> u32 {
-    let scan_x = width / 2; // avoid potential UI elements on the left edge
-    let search_range = height / 10;
-    let mut max_diff = 0u32;
-    let mut max_y = 0u32;
-    for y in 1..search_range {
-        let prev_i = ((y - 1) * width + scan_x) as usize * 4;
-        let curr_i = (y * width + scan_x) as usize * 4;
-        let diff = (bgra[prev_i] as i32 - bgra[curr_i] as i32).unsigned_abs()
-            + (bgra[prev_i + 1] as i32 - bgra[curr_i + 1] as i32).unsigned_abs()
-            + (bgra[prev_i + 2] as i32 - bgra[curr_i + 2] as i32).unsigned_abs();
-        if diff > max_diff {
-            max_diff = diff;
-            max_y = y;
-        }
+/// `CAPTURE_BORDER_OVERRIDE=N` env var bypasses detection — escape hatch for DPI quirks.
+pub fn get_title_bar_height(hwnd: HWND) -> u32 {
+    if let Ok(s) = std::env::var("CAPTURE_BORDER_OVERRIDE")
+        && let Ok(n) = s.parse::<u32>()
+    {
+        return n;
     }
-    max_y
+    let mut window_rect = RECT::default();
+    let mut client_origin = POINT { x: 0, y: 0 };
+    unsafe {
+        if GetWindowRect(hwnd, &mut window_rect).is_err() {
+            return 0;
+        }
+        let _ = ClientToScreen(hwnd, &mut client_origin);
+    }
+    (client_origin.y - window_rect.top).max(0) as u32
 }
 
 fn create_d3d_device() -> Result<(ID3D11Device, ID3D11DeviceContext)> {
@@ -237,8 +235,6 @@ impl FrameReader {
         Ok(())
     }
 
-    /// Downsample the captured frame on the GPU to `(out_w, out_h)` and read back
-    /// only that many pixels. Returns RGBA pixel data.
     pub fn read(
         &mut self,
         frame: &Direct3D11CaptureFrame,
@@ -279,7 +275,6 @@ impl FrameReader {
             ctx.PSSetSamplers(0, Some(&[Some(self.sampler.clone())]));
             ctx.Draw(3, 0);
 
-            // Unbind SRV so the texture can be released
             let empty: [Option<ID3D11ShaderResourceView>; 1] = [None];
             ctx.PSSetShaderResources(0, Some(&empty));
 
@@ -303,11 +298,9 @@ impl FrameReader {
 
         unsafe { ctx.Unmap(staging, 0) };
 
-        // Data is BGRA from the GPU; callers use it directly
         Ok(&self.buf)
     }
 
-    /// Read raw pixels from the captured frame without any GPU processing.
     pub fn read_raw(&mut self, frame: &Direct3D11CaptureFrame) -> Result<(u32, u32, Vec<u8>)> {
         let surface = frame.Surface()?;
         let access: IDirect3DDxgiInterfaceAccess = surface.cast()?;
@@ -351,8 +344,6 @@ impl FrameReader {
         Ok((desc.Width, desc.Height, pixels))
     }
 
-    /// Like `read`, but first crops the captured frame to the given rect.
-    /// Use with `client_crop_rect()` to exclude window borders.
     pub fn read_cropped(
         &mut self,
         frame: &Direct3D11CaptureFrame,
@@ -366,7 +357,6 @@ impl FrameReader {
         let access: IDirect3DDxgiInterfaceAccess = surface.cast()?;
         let texture: ID3D11Texture2D = unsafe { access.GetInterface()? };
 
-        // Cache crop texture and its SRV across frames
         if self.crop_w != crop.w || self.crop_h != crop.h || self.crop_tex.is_none() {
             let crop_desc = D3D11_TEXTURE2D_DESC {
                 Width: crop.w,
@@ -460,56 +450,25 @@ impl FrameReader {
         Ok(&self.buf)
     }
 
-    /// Save current buffer as a BMP file for debugging.
     pub fn save_debug_bmp(&self, path: &str) -> std::io::Result<()> {
-        use std::io::Write;
-        let w = self.out_w;
-        let h = self.out_h;
-        let row_bytes = (w * 3 + 3) & !3; // BMP rows are 4-byte aligned
-        let pixel_size = row_bytes * h;
-        let file_size = 54 + pixel_size;
-
-        let mut f = std::fs::File::create(path)?;
-        // BMP header
-        f.write_all(b"BM")?;
-        f.write_all(&(file_size).to_le_bytes())?;
-        f.write_all(&0u32.to_le_bytes())?; // reserved
-        f.write_all(&54u32.to_le_bytes())?; // pixel data offset
-        // DIB header
-        f.write_all(&40u32.to_le_bytes())?; // header size
-        f.write_all(&(w as i32).to_le_bytes())?;
-        f.write_all(&(-(h as i32)).to_le_bytes())?; // negative = top-down
-        f.write_all(&1u16.to_le_bytes())?; // planes
-        f.write_all(&24u16.to_le_bytes())?; // bpp
-        f.write_all(&0u32.to_le_bytes())?; // no compression
-        f.write_all(&pixel_size.to_le_bytes())?;
-        f.write_all(&[0u8; 16])?; // rest of DIB header
-
-        let mut row = vec![0u8; row_bytes as usize];
-        for y in 0..h as usize {
-            for x in 0..w as usize {
-                let src = y * w as usize * 4 + x * 4;
-                let dst = x * 3;
-                row[dst] = self.buf[src]; // B
-                row[dst + 1] = self.buf[src + 1]; // G
-                row[dst + 2] = self.buf[src + 2]; // R
-            }
-            f.write_all(&row)?;
-        }
-        Ok(())
+        crate::util::bmp::write_bgra(path, &self.buf, self.out_w, self.out_h)
     }
 }
 
-/// Captures frames from the given window. The callback receives the crop rect,
-/// frame, and reader. Use `reader.read_cropped(frame, crop, w, h)` to get
-/// client-area-only pixels. Return `true` to continue, `false` to stop.
 pub fn run<F>(window_title: &str, on_frame: F) -> Result<()>
 where
     F: FnMut(&CropRect, &Direct3D11CaptureFrame, &mut FrameReader) -> bool + Send + 'static,
 {
     let title = format!("{}\0", window_title);
     let hwnd = unsafe { FindWindowA(None, PCSTR(title.as_ptr()))? };
+    run_for_hwnd(hwnd, on_frame)
+}
 
+pub fn run_for_hwnd<F>(hwnd: HWND, on_frame: F) -> Result<()>
+where
+    F: FnMut(&CropRect, &Direct3D11CaptureFrame, &mut FrameReader) -> bool + Send + 'static,
+{
+    super::ensure_dpi_aware();
     let interop = windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
     let item: GraphicsCaptureItem = unsafe { interop.CreateForWindow(hwnd)? };
 
@@ -532,6 +491,8 @@ where
     let mut reader = FrameReader::new(device, context)?;
     let mut on_frame = on_frame;
     let main_thread_id = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() };
+
+    let title_bar_height = get_title_bar_height(hwnd);
     let mut crop: Option<CropRect> = None;
 
     pool.FrameArrived(&TypedEventHandler::new(
@@ -539,13 +500,15 @@ where
             let pool = pool.as_ref().unwrap();
             let frame = pool.TryGetNextFrame()?;
 
-            // Detect border on first frame by reading raw captured pixels
             if crop.is_none() {
-                let (full_w, full_h, pixels) = reader.read_raw(&frame).map_err(|e| {
-                    eprintln!("FATAL: border detection read_raw failed: {}", e);
-                    e
-                })?;
-                let border_h = detect_border_height(&pixels, full_w, full_h);
+                let surface = frame.Surface()?;
+                let access: IDirect3DDxgiInterfaceAccess = surface.cast()?;
+                let tex: ID3D11Texture2D = unsafe { access.GetInterface()? };
+                let mut desc = D3D11_TEXTURE2D_DESC::default();
+                unsafe { tex.GetDesc(&mut desc) };
+                let full_w = desc.Width;
+                let full_h = desc.Height;
+                let border_h = title_bar_height.min(full_h.saturating_sub(1));
                 crop = Some(CropRect {
                     x: 0,
                     y: border_h,
@@ -553,7 +516,7 @@ where
                     h: full_h - border_h,
                 });
                 println!(
-                    "Detected border: {}px, client area: {}x{}",
+                    "Title bar: {}px, client area: {}x{}",
                     border_h,
                     full_w,
                     full_h - border_h

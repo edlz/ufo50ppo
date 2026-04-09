@@ -33,7 +33,7 @@ fn main() -> windows::core::Result<()> {
     let window_title: String = std::env::args()
         .nth(1)
         .unwrap_or_else(|| game.window_title.to_string());
-    let mut tracker = games::ninpek::NinpekTracker::new(obs_w);
+    let mut tracker = games::ninpek::NinpekTracker::new(obs_w, 0);
     let mut total_reward = 0.0;
     let mut frame_count = 0u32;
     let mut last_mem_score: Option<u64> = None;
@@ -58,7 +58,7 @@ fn main() -> windows::core::Result<()> {
                 }
             };
 
-            if frame_count % SNAP_INTERVAL == 0 {
+            if frame_count.is_multiple_of(SNAP_INTERVAL) {
                 let path = format!("debug_frames/snap_{:03}.bmp", frame_count / SNAP_INTERVAL);
                 reader.save_debug_bmp(&path).ok();
             }

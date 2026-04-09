@@ -1,5 +1,5 @@
+use ufo50ppo::games::ninpek::WINDOW_TITLE;
 use ufo50ppo::platform;
-use ufo50ppo::util::WINDOW_TITLE;
 const BENCH_FRAMES: u32 = 300;
 const SIZES: &[(u32, u32)] = &[
     (84, 84),

@@ -5,6 +5,7 @@
 //
 //   "ufo50.exe"+0x00742230 -> 0x488 -> 0x18 -> 0x8 -> 0x10 -> [0xD0 | 0x4C0] -> 0x0 -> 0x8 -> 0x0
 
+use crate::platform::win32::find_windows_by_title;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::System::Diagnostics::Debug::ReadProcessMemory;
 use windows::Win32::System::Diagnostics::ToolHelp::{
@@ -12,8 +13,6 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
     TH32CS_SNAPMODULE32,
 };
 use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ};
-use windows::Win32::UI::WindowsAndMessaging::{FindWindowA, GetWindowThreadProcessId};
-use windows::core::PCSTR;
 
 const BASE_OFFSET: usize = 0x00742230;
 const SHARED_PREFIX: &[usize] = &[0x488, 0x18, 0x8, 0x10];
@@ -30,35 +29,27 @@ pub struct MemReader {
 unsafe impl Send for MemReader {}
 
 impl MemReader {
-    pub fn new(window_title: &str) -> Result<Self, String> {
-        let mut title = window_title.as_bytes().to_vec();
-        title.push(0);
-        let hwnd = unsafe { FindWindowA(PCSTR::null(), PCSTR(title.as_ptr())) }
-            .map_err(|e| format!("FindWindowA('{}') failed: {:?}", window_title, e))?;
-        if hwnd.0.is_null() {
-            return Err(format!("window '{}' not found", window_title));
-        }
-        let mut pid = 0u32;
-        unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
-        if pid == 0 {
-            return Err("GetWindowThreadProcessId returned 0".into());
-        }
-
+    pub fn for_pid(pid: u32) -> Result<Self, String> {
         let module_base = find_module_base(pid, MODULE_NAME)?;
-
         let process = unsafe {
             OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, false, pid)
                 .map_err(|e| format!("OpenProcess failed: {:?}", e))?
         };
-
         Ok(Self {
             process,
             module_base,
         })
     }
 
+    pub fn new(window_title: &str) -> Result<Self, String> {
+        let windows = find_windows_by_title(window_title);
+        let info = windows
+            .first()
+            .ok_or_else(|| format!("window '{}' not found", window_title))?;
+        Self::for_pid(info.pid)
+    }
+
     /// Read score and lives in one pass, sharing the common prefix derefs.
-    /// Each component is `None` independently if its tail walk fails.
     pub fn read_both(&self) -> (Option<f64>, Option<f64>) {
         let Some(shared) = self.walk_prefix() else {
             return (None, None);
@@ -69,8 +60,6 @@ impl MemReader {
         )
     }
 
-    /// Initial deref of the static base pointer plus the shared offsets, returning the
-    /// pointer at which the score/lives tails diverge.
     fn walk_prefix(&self) -> Option<usize> {
         let mut addr = self.read_ptr(self.module_base + BASE_OFFSET)?;
         for &off in SHARED_PREFIX {
@@ -79,8 +68,6 @@ impl MemReader {
         Some(addr)
     }
 
-    /// Walk a tail of offsets from `start` and read the final f64. The last offset is
-    /// added to the address but not dereferenced before the read.
     fn walk_tail(&self, start: usize, tail: &[usize]) -> Option<f64> {
         let mut addr = start;
         let last = tail.len() - 1;

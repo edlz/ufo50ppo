@@ -6,21 +6,17 @@ pub struct TbLogger {
 }
 
 impl TbLogger {
-    /// Create a new logger with a timestamped run folder under `base_dir`.
-    /// e.g. base_dir="runs/ninpek" → "runs/ninpek/20260405_143022"
     pub fn new(base_dir: &str, step_offset: u64) -> Self {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        // Format as YYYYMMDD_HHMMSS (approximate from unix timestamp)
         let secs_per_day = 86400u64;
         let days = now / secs_per_day;
         let time_of_day = now % secs_per_day;
         let hours = time_of_day / 3600;
         let minutes = (time_of_day % 3600) / 60;
         let seconds = time_of_day % 60;
-        // Days since epoch to approximate date
         let (year, month, day) = days_to_date(days);
         let run_name = format!(
             "{:04}{:02}{:02}_{:02}{:02}{:02}",
@@ -46,6 +42,26 @@ impl TbLogger {
             .add_scalar("rollout/ep_len_mean", length as f32, s);
     }
 
+    pub fn log_episode_for_env(&mut self, step: usize, env_id: usize, reward: f64, length: u32) {
+        let s = self.step(step);
+        self.writer.add_scalar(
+            &format!("rollout/env_{}/ep_rew_mean", env_id),
+            reward as f32,
+            s,
+        );
+        self.writer.add_scalar(
+            &format!("rollout/env_{}/ep_len_mean", env_id),
+            length as f32,
+            s,
+        );
+    }
+
+    pub fn log_episode_spread(&mut self, step: usize, min: f64, max: f64) {
+        let s = self.step(step);
+        self.writer.add_scalar("rollout/ep_rew_min", min as f32, s);
+        self.writer.add_scalar("rollout/ep_rew_max", max as f32, s);
+    }
+
     pub fn log_update(
         &mut self,
         step: usize,
@@ -53,6 +69,7 @@ impl TbLogger {
         value_loss: f64,
         entropy: f64,
         total_loss: f64,
+        grad_norm: f64,
     ) {
         let s = self.step(step);
         self.writer
@@ -62,6 +79,8 @@ impl TbLogger {
         self.writer.add_scalar("train/entropy", entropy as f32, s);
         self.writer
             .add_scalar("train/total_loss", total_loss as f32, s);
+        self.writer
+            .add_scalar("train/grad_norm", grad_norm as f32, s);
     }
 
     pub fn log_explained_variance(&mut self, step: usize, ev: f64) {

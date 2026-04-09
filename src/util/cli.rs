@@ -5,6 +5,7 @@ pub struct TrainArgs {
     pub max_minutes: Option<u64>,
     pub auto_resume: bool,
     pub debug: bool,
+    pub num_envs: u32,
 }
 
 fn parse_or_die<T: std::str::FromStr>(val: &str, flag: &str) -> T {
@@ -29,6 +30,7 @@ pub fn parse_train_args(default_namespace: &str) -> TrainArgs {
     let mut max_minutes = None;
     let mut auto_resume = false;
     let mut debug = false;
+    let mut num_envs: u32 = 1;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -59,6 +61,14 @@ pub fn parse_train_args(default_namespace: &str) -> TrainArgs {
             }
             "--auto-resume" | "-r" => auto_resume = true,
             "--debug" | "-d" => debug = true,
+            "--num-envs" | "-N" => {
+                i += 1;
+                num_envs = parse_or_die(require_value(&args, i, "--num-envs"), "--num-envs");
+                if num_envs == 0 {
+                    eprintln!("error: --num-envs must be >= 1");
+                    std::process::exit(2);
+                }
+            }
             other => {
                 eprintln!("error: unknown argument '{}'", other);
                 std::process::exit(2);
@@ -73,5 +83,6 @@ pub fn parse_train_args(default_namespace: &str) -> TrainArgs {
         max_minutes,
         auto_resume,
         debug,
+        num_envs,
     }
 }

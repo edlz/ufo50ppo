@@ -1,5 +1,3 @@
-// game_over pixel regions are calibrated for 128x128 capture resolution. Score and
-// lives are read from process memory (see mem.rs).
 pub mod events;
 mod game_over;
 mod mem;
@@ -21,16 +19,16 @@ fn ninpek_debug_suffix(event: &str, reward: f64) -> String {
     }
 }
 
-fn make_ninpek_tracker(w: u32) -> Box<dyn crate::games::GameTracker> {
-    Box::new(NinpekTracker::new(w))
+fn make_ninpek_tracker(w: u32, pid: u32) -> Box<dyn crate::games::GameTracker> {
+    Box::new(NinpekTracker::new(w, pid))
 }
 
 pub fn definition() -> GameDefinition {
     GameDefinition {
         name: "ninpek",
         window_title: WINDOW_TITLE,
-        obs_width: 128,
-        obs_height: 128,
+        obs_width: 84,
+        obs_height: 84,
         num_actions: crate::platform::NUM_ACTIONS,
         make_tracker: make_ninpek_tracker,
         hyperparams: Hyperparams::default(),

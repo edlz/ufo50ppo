@@ -3,13 +3,11 @@ use windows::{
     core::*,
 };
 
-const NOOP_FLAG: usize = 1 << 16; // values with this bit set encode a wait, not a key
+// Bit 16 distinguishes a wait sentinel from a real VK code in `reset_game` sequences.
+const NOOP_FLAG: usize = 1 << 16;
 
-/// Default per-tap delay used by `reset_game` when a tracker doesn't override it.
 pub const DEFAULT_RESET_TAP_MS: u64 = 25;
 
-/// Encode a wait of `ms` milliseconds as a sentinel value usable in `reset_game` sequences.
-/// Use as `vk_noop(150)` for a 150ms wait inline alongside real VK codes.
 pub const fn vk_noop(ms: u64) -> usize {
     NOOP_FLAG | ms as usize
 }
@@ -58,17 +56,20 @@ pub struct Input {
     pub(crate) held: [bool; 256],
 }
 
-// SAFETY: HWND is a Win32 handle (opaque integer), safe to send across threads.
 unsafe impl Send for Input {}
 
 impl Input {
+    pub fn for_hwnd(hwnd: HWND) -> Self {
+        Self {
+            hwnd,
+            held: [false; 256],
+        }
+    }
+
     pub fn new(window_title: &str) -> Result<Self> {
         let title = format!("{}\0", window_title);
         let hwnd = unsafe { FindWindowA(None, PCSTR(title.as_ptr()))? };
-        Ok(Self {
-            hwnd,
-            held: [false; 256],
-        })
+        Ok(Self::for_hwnd(hwnd))
     }
 
     pub fn execute_action(&mut self, action: usize) {
