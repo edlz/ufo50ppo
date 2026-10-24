@@ -18,7 +18,10 @@ const NUM_UPDATES: usize = 100;
 const TARGET_ACTION: i64 = 0;
 
 fn random_obs(device: Device) -> Tensor {
-    Tensor::rand([1, 4, 128, 128], (Kind::Float, device))
+    Tensor::rand(
+        [1, ufo50ppo::train::preprocess::CHANNELS, 128, 128],
+        (Kind::Float, device),
+    )
 }
 
 fn step_reward(action: i64) -> (f64, bool) {

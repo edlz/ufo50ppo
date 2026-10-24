@@ -84,7 +84,7 @@ pub fn run_training_multi(
 
     let mut trackers: Vec<Box<dyn GameTracker>> = (0..n).map(|_| (game.make_tracker)()).collect();
     let mut frame_stacks: Vec<FrameStack> = (0..n)
-        .map(|_| FrameStack::new(device, game.obs_width))
+        .map(|_| FrameStack::new(device, game.obs_width, game.obs_height))
         .collect();
     let mut buffers: Vec<RolloutBuffer> = (0..n)
         .map(|_| RolloutBuffer::new(hp.rollout_len * 2))

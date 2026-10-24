@@ -1,6 +1,6 @@
 # ufo50ppo
 
-PPO reinforcement learning agent that learns to play [UFO 50](https://50games.fun/) games. The game runs in **lockstep** with the trainer: a patched copy of the game hands each frame (84×84 pixels plus score, lives and state read inside the game) to the trainer over a socket and waits for the next action, so there is no screen capture, no OS-level key injection, and no dependency on window focus. Runs on Windows, macOS (Wine) and headless Linux (Wine + Xvfb). The training pipeline is game-agnostic; per-game logic (rewards, reset handling) lives in `src/games/<name>/`.
+PPO reinforcement learning agent that learns to play [UFO 50](https://50games.fun/) games. The game runs in **lockstep** with the trainer: a patched copy of the game hands each frame (native 384×216 pixels plus score, lives and state read inside the game) to the trainer over a socket and waits for the next action, so there is no screen capture, no OS-level key injection, and no dependency on window focus. Runs on Windows, macOS (Wine) and headless Linux (Wine + Xvfb). The training pipeline is game-agnostic; per-game logic (rewards, reset handling) lives in `src/games/<name>/`.
 
 ## Requirements
 
@@ -85,14 +85,14 @@ Resuming reads `latest.{safetensors,adam,json}` and continues from the saved epi
 ┌──────────── game process (×N) ─────────────┐        ┌──────── trainer ─────────┐
 │ ufo50.exe + patched data.win               │        │ LockstepGame (GameRunner)│
 │  oController Post Draw, every k frames:    │ frame  │ GameTracker (state-based │
-│   84×84 frame + state ───────────────────► │ ─────► │  rewards / done / reset) │
+│   384×216 frame + state ─────────────────► │ ─────► │  rewards / done / reset) │
 │   blocks in ufo50rl.dll until reply ◄───── │ ◄───── │ FrameStack → ActorCritic │
 │  scrGetInput reads the replied keys        │ action │  → PPO (batched over N)  │
 └────────────────────────────────────────────┘ (TCP)  └──────────────────────────┘
 ```
 
 - **`bridge/`** — `ufo50rl.c` (GameMaker extension DLL: TCP client, blocking `rl_step`), `patch.csx` (UndertaleModTool script that registers the DLL and injects the sync point, state export and input override), `build.sh`, `headless.sh`. The wire layout is documented at the top of `patch.csx` and mirrored in `src/platform/lockstep.rs`.
-- **`src/platform/`** — `GameRunner` trait, the lockstep implementation (launches the game, under Wine off Windows), and the action → key table.
+- **`src/platform/`** — `GameRunner` trait, the lockstep implementation (launches the game, under Wine off Windows, and averages each frame down 3× to the 128×72 colour observation), and the action → key table.
 - **`src/train/multi.rs`** — the trainer. Each tick it reads one frame from every alive env (each game is blocked waiting for its action), runs **one** batched inference call, and answers every env; the games then advance concurrently until the next tick. PPO updates run when all alive envs have filled their per-env buffer. Dead envs (connection lost or timed out) are dropped; the trainer exits when none remain.
 
 Input goes through the game's own `scrGetInput`, not the OS keyboard, because GameMaker ignores keyboard state for unfocused windows — with several game windows only one would receive input.

@@ -1,54 +1,60 @@
 use tch::{Device, Kind, Tensor};
 
 const STACK_SIZE: i64 = 4;
+const COLORS: i64 = 3;
+/// Model input channels: RGB for each stacked frame.
+pub const CHANNELS: i64 = STACK_SIZE * COLORS;
 
+/// Stacks the last STACK_SIZE frames as uint8 RGB; the model scales to [0, 1] itself, which
+/// keeps rollout buffers at a quarter of the float size.
 pub struct FrameStack {
     buffer: Tensor,
-    frame_size: i64,
+    width: i64,
+    height: i64,
     count: usize,
 }
 
 impl FrameStack {
-    pub fn new(device: Device, frame_size: u32) -> Self {
-        let fs = frame_size as i64;
+    pub fn new(device: Device, width: u32, height: u32) -> Self {
+        let (w, h) = (width as i64, height as i64);
         Self {
-            buffer: Tensor::zeros([1, STACK_SIZE, fs, fs], (Kind::Float, device)),
-            frame_size: fs,
+            buffer: Tensor::zeros([1, CHANNELS, h, w], (Kind::Uint8, device)),
+            width: w,
+            height: h,
             count: 0,
         }
     }
 
     pub fn push(&mut self, bgra: &[u8], width: u32, height: u32) -> Tensor {
-        let w = width as usize;
-        let h = height as usize;
-
-        // BT.601 luma coefficients.
-        let mut gray = vec![0f32; w * h];
-        for i in 0..w * h {
-            let b = bgra[i * 4] as f32;
-            let g = bgra[i * 4 + 1] as f32;
-            let r = bgra[i * 4 + 2] as f32;
-            gray[i] = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0;
+        let n = width as usize * height as usize;
+        let mut planar = vec![0u8; n * 3];
+        for (i, px) in bgra.chunks_exact(4).take(n).enumerate() {
+            planar[i] = px[2];
+            planar[n + i] = px[1];
+            planar[2 * n + i] = px[0];
         }
 
-        let frame = Tensor::from_slice(&gray)
-            .reshape([1, 1, h as i64, w as i64])
+        let mut frame = Tensor::from_slice(&planar)
+            .reshape([1, COLORS, height as i64, width as i64])
             .to_device(self.buffer.device());
-
-        let frame = if h as i64 != self.frame_size || w as i64 != self.frame_size {
-            frame.upsample_bilinear2d([self.frame_size, self.frame_size], false, None, None)
-        } else {
-            frame
-        };
+        if height as i64 != self.height || width as i64 != self.width {
+            frame = frame
+                .to_kind(Kind::Float)
+                .upsample_bilinear2d([self.height, self.width], false, None, None)
+                .round()
+                .to_kind(Kind::Uint8);
+        }
 
         if self.count == 0 {
             for i in 0..STACK_SIZE {
-                self.buffer.narrow(1, i, 1).copy_(&frame);
+                self.buffer.narrow(1, i * COLORS, COLORS).copy_(&frame);
             }
         } else {
-            let shifted = self.buffer.narrow(1, 1, STACK_SIZE - 1).copy();
-            self.buffer.narrow(1, 0, STACK_SIZE - 1).copy_(&shifted);
-            self.buffer.narrow(1, STACK_SIZE - 1, 1).copy_(&frame);
+            let shifted = self.buffer.narrow(1, COLORS, CHANNELS - COLORS).copy();
+            self.buffer.narrow(1, 0, CHANNELS - COLORS).copy_(&shifted);
+            self.buffer
+                .narrow(1, CHANNELS - COLORS, COLORS)
+                .copy_(&frame);
         }
         self.count += 1;
 

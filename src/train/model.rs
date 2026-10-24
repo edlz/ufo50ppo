@@ -31,7 +31,7 @@ impl ActorCritic {
         let shared = nn::seq()
             .add(nn::conv2d(
                 root / "c1",
-                4,
+                super::preprocess::CHANNELS,
                 32,
                 8,
                 nn::ConvConfig {
@@ -82,8 +82,13 @@ impl ActorCritic {
         }
     }
 
+    /// `obs` is a FrameStack batch: uint8 pixels, or floats already in [0, 1].
     pub fn forward(&self, obs: &Tensor) -> (Tensor, Tensor) {
-        let features = self.shared.forward(obs);
+        let features = if obs.kind() == Kind::Uint8 {
+            self.shared.forward(&(obs.to_kind(Kind::Float) / 255.0))
+        } else {
+            self.shared.forward(obs)
+        };
         let log_probs = self
             .policy_head
             .forward(&features)

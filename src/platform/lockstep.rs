@@ -9,10 +9,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-pub const OBS_W: usize = 84;
-pub const OBS_H: usize = 84;
+const RAW_W: usize = 384;
+const RAW_H: usize = 216;
+const SCALE: usize = 3;
+pub const OBS_W: usize = RAW_W / SCALE;
+pub const OBS_H: usize = RAW_H / SCALE;
 const STATE_LEN: usize = 16;
-const MSG_LEN: usize = STATE_LEN * 8 + OBS_W * OBS_H * 4;
+const MSG_LEN: usize = STATE_LEN * 8 + RAW_W * RAW_H * 4;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(90);
 
 pub const FLAG_QUIT: u32 = 1;
@@ -55,6 +58,7 @@ pub struct LockstepGame {
     child: Child,
     stream: TcpStream,
     msg: Vec<u8>,
+    obs: Vec<u8>,
     frame_skip: u32,
     game_id: u8,
     pending_flags: u32,
@@ -123,6 +127,7 @@ impl LockstepGame {
             child,
             stream,
             msg: vec![0; MSG_LEN],
+            obs: vec![0; OBS_W * OBS_H * 4],
             frame_skip: frame_skip.max(1),
             game_id,
             pending_flags: 0,
@@ -173,9 +178,31 @@ impl LockstepGame {
         self.recv()
     }
 
-    /// 84x84 BGRA, as drawn by the game (no window capture involved).
+    /// OBS_W x OBS_H BGRA: the game's native frame averaged over SCALE x SCALE blocks, so
+    /// nothing smaller than the scale factor is skipped.
     pub fn obs(&self) -> &[u8] {
-        &self.msg[STATE_LEN * 8..]
+        &self.obs
+    }
+
+    fn downscale(&mut self) {
+        let raw = &self.msg[STATE_LEN * 8..];
+        for oy in 0..OBS_H {
+            for ox in 0..OBS_W {
+                let mut sum = [0u32; 4];
+                for y in oy * SCALE..(oy + 1) * SCALE {
+                    let row = (y * RAW_W + ox * SCALE) * 4;
+                    for px in raw[row..row + SCALE * 4].chunks_exact(4) {
+                        for (s, &v) in sum.iter_mut().zip(px) {
+                            *s += v as u32;
+                        }
+                    }
+                }
+                let dst = (oy * OBS_W + ox) * 4;
+                for (d, s) in self.obs[dst..dst + 4].iter_mut().zip(sum) {
+                    *d = (s / (SCALE * SCALE) as u32) as u8;
+                }
+            }
+        }
     }
 
     pub fn state(&self) -> GameState {
@@ -219,6 +246,7 @@ impl LockstepGame {
             )));
         }
         self.stream.read_exact(&mut self.msg)?;
+        self.downscale();
         self.awaiting_reply = true;
         Ok(())
     }

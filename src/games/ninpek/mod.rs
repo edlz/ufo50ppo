@@ -17,8 +17,8 @@ pub fn definition() -> GameDefinition {
     GameDefinition {
         name: "ninpek",
         game_id: GAME_ID,
-        obs_width: 84,
-        obs_height: 84,
+        obs_width: crate::platform::lockstep::OBS_W as u32,
+        obs_height: crate::platform::lockstep::OBS_H as u32,
         num_actions: crate::platform::NUM_ACTIONS,
         make_tracker: make_ninpek_tracker,
         hyperparams: Hyperparams::default(),

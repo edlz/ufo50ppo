@@ -16,7 +16,7 @@ use ufo50ppo::util::checkpoint;
 
 const HISTORY: usize = 16;
 const COLS: usize = 4;
-const SCALE: usize = 4;
+const SCALE: usize = 3;
 
 struct Step {
     pixels: Vec<u8>,
@@ -67,7 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut game = LockstepGame::launch(&game_dir, 4, GAME_ID)?;
     let mut tracker = NinpekTracker::new();
-    let mut stack = FrameStack::new(device, OBS_W as u32);
+    let mut stack = FrameStack::new(device, OBS_W as u32, OBS_H as u32);
     let mut history: VecDeque<Step> = VecDeque::with_capacity(HISTORY);
     let mut summary = std::fs::File::create(out_dir.join("summary.txt"))?;
     let mut draining = true;

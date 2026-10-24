@@ -6,7 +6,7 @@
 //   [16, 144)  16 x f64 game state: frame, room, game id, paused, then Ninpek's
 //              o34_Mas points[0], life[0], state, iWater, then title menuSel,
 //              numPlayers, demo playback, camera x, run kill count, boss HP (see GameState in lockstep.rs)
-//   [144, ..)  84x84 BGRA frame
+//   [144, ..)  384x216 BGRA frame (native resolution; the trainer downscales it)
 using UndertaleModLib.Compiler;
 using UndertaleModLib.Models;
 
@@ -43,7 +43,7 @@ g.QueueAppend("gml_Object_oController_Create_0", @"
 global.rlOn = rl_init();
 if (global.rlOn)
 {
-    global.rlBuf = buffer_create(28368, buffer_fixed, 1);
+    global.rlBuf = buffer_create(331920, buffer_fixed, 1);
     global.rlSurf = -1;
     global.rlKeys = array_create(8, 0);
     global.rlPrevKeys = array_create(8, 0);
@@ -103,14 +103,17 @@ buffer_poke(_b, 112, buffer_f64, (_run && variable_global_exists(""g34_totalKill
 buffer_poke(_b, 120, buffer_f64, (_run && instance_exists(o34_BossEye)) ? o34_BossEye.life : -1);
 if (!surface_exists(global.rlSurf))
 {
-    global.rlSurf = surface_create(84, 84);
+    global.rlSurf = surface_create(384, 216);
 }
+var _filter = gpu_get_texfilter();
+gpu_set_texfilter(false);
 surface_set_target(global.rlSurf);
 draw_clear(c_black);
-draw_surface_stretched(application_surface, 0, 0, 84, 84);
+draw_surface_stretched(application_surface, 0, 0, 384, 216);
 surface_reset_target();
+gpu_set_texfilter(_filter);
 buffer_get_surface(_b, global.rlSurf, 144);
-if (!rl_step(buffer_get_address(_b), 28368))
+if (!rl_step(buffer_get_address(_b), 331920))
 {
     game_end();
     exit;
