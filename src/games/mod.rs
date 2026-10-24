@@ -27,4 +27,9 @@ pub trait GameTracker: Send {
     fn episode_breakdown(&self) -> String {
         String::new()
     }
+
+    /// Per-episode scalars logged to TensorBoard under `game/<name>`.
+    fn episode_metrics(&self) -> Vec<(&'static str, f64)> {
+        Vec::new()
+    }
 }

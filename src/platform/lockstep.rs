@@ -43,6 +43,8 @@ pub struct GameState {
     pub num_players: i32,
     /// A recorded attract-mode demo is playing; input is ignored.
     pub demo: bool,
+    /// Ninpek: camera x, i.e. how far the run has scrolled; -1 outside a run.
+    pub view_x: f64,
 }
 
 pub struct LockstepGame {
@@ -72,6 +74,8 @@ impl LockstepGame {
             overrides.push_str(";mscoree,mshtml=");
             if game_dir.join("d3d11.dll").exists() {
                 overrides.push_str(";d3d11,d3d10core=n,b");
+                // Copies share the game dir; concurrent writers of DXVK's state cache can hang startup.
+                c.env("DXVK_STATE_CACHE", "0");
             }
             c.env("WINEDLLOVERRIDES", overrides.trim_start_matches(';'));
             c
@@ -124,17 +128,30 @@ impl LockstepGame {
         Ok(game)
     }
 
-    /// Launches `n` copies concurrently (each takes several seconds to boot).
+    /// Launches `n` copies concurrently (each takes several seconds to boot), staggered and
+    /// with retries so one slow start doesn't fail the batch.
     pub fn launch_many(
         game_dir: &Path,
         n: usize,
         frame_skip: u32,
         game_id: u8,
     ) -> io::Result<Vec<Self>> {
+        const ATTEMPTS: usize = 3;
         let handles: Vec<_> = (0..n)
-            .map(|_| {
+            .map(|i| {
                 let dir: PathBuf = game_dir.to_path_buf();
-                std::thread::spawn(move || Self::launch(&dir, frame_skip, game_id))
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_secs(i as u64));
+                    let mut result = Self::launch(&dir, frame_skip, game_id);
+                    for attempt in 2..=ATTEMPTS {
+                        let Err(e) = &result else { break };
+                        eprintln!(
+                            "[lockstep] env {i} launch failed ({e}), attempt {attempt}/{ATTEMPTS}"
+                        );
+                        result = Self::launch(&dir, frame_skip, game_id);
+                    }
+                    result
+                })
             })
             .collect();
         handles
@@ -171,6 +188,7 @@ impl LockstepGame {
             menu_sel: f(8) as i32,
             num_players: f(9) as i32,
             demo: f(10) != 0.0,
+            view_x: f(11),
         }
     }
 

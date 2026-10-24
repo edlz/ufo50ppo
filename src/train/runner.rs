@@ -251,6 +251,9 @@ pub(crate) fn report_episode_end(
         println!("{}", tracker.episode_breakdown());
     }
     logger.log_episode(total_frames as usize, episode_reward, episode_frames);
+    for (name, value) in tracker.episode_metrics() {
+        logger.log_scalar(&format!("game/{name}"), value, total_frames as usize);
+    }
     if let Some(i) = env_idx {
         logger.log_episode_for_env(total_frames as usize, i, episode_reward, episode_frames);
     }

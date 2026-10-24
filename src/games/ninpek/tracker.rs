@@ -21,6 +21,8 @@ pub struct NinpekTracker {
     ep_life_lost: u32,
     ep_stages: u32,
     ep_survival: f64,
+    ep_max_x: f64,
+    ep_max_zone: i32,
 }
 
 impl NinpekTracker {
@@ -34,6 +36,8 @@ impl NinpekTracker {
             ep_life_lost: 0,
             ep_stages: 0,
             ep_survival: 0.0,
+            ep_max_x: 0.0,
+            ep_max_zone: 0,
         }
     }
 
@@ -109,6 +113,10 @@ impl Default for NinpekTracker {
 impl GameTracker for NinpekTracker {
     fn process_frame(&mut self, frame: &Frame) -> FrameResult {
         let result = self.process_frame_inner(frame.state);
+        if frame.state.mas_state == PLAYING {
+            self.ep_max_x = self.ep_max_x.max(frame.state.view_x);
+            self.ep_max_zone = self.ep_max_zone.max(frame.state.zone);
+        }
         match result.event_name {
             events::SCORE => self.ep_scores += 1,
             events::LIFE_GAINED => self.ep_life_gained += 1,
@@ -134,18 +142,31 @@ impl GameTracker for NinpekTracker {
         // Tap through the title screen (with the cursor on 1 PLAYER) and skip the intro.
         self.idle_ticks += 1;
         let tap = if s.menu_sel > 0 { ACTION_UP } else { ACTION_A };
-        Some(if self.idle_ticks.is_multiple_of(2) { tap } else { 0 })
+        Some(if self.idle_ticks.is_multiple_of(2) {
+            tap
+        } else {
+            0
+        })
     }
 
     fn episode_breakdown(&self) -> String {
         format!(
-            "  scores: {} | stages: {} | life+: {} | life-: {} | survival: {:.1}",
+            "  furthest x: {:.0} (section {}) | scores: {} | stages: {} | life+: {} | life-: {} | survival: {:.1}",
+            self.ep_max_x,
+            self.ep_max_zone,
             self.ep_scores,
             self.ep_stages,
             self.ep_life_gained,
             self.ep_life_lost,
             self.ep_survival,
         )
+    }
+
+    fn episode_metrics(&self) -> Vec<(&'static str, f64)> {
+        vec![
+            ("furthest_x", self.ep_max_x),
+            ("furthest_section", self.ep_max_zone as f64),
+        ]
     }
 
     fn reset_episode(&mut self) {

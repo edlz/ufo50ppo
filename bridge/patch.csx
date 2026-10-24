@@ -5,7 +5,7 @@
 //   [12, 16)   u32 flags: 1 = quit, 2 = launch game (id in bits 8..15)
 //   [16, 144)  16 x f64 game state: frame, room, game id, paused, then Ninpek's
 //              o34_Mas points[0], life[0], state, iWater, then title menuSel,
-//              numPlayers, demo playback (see GameState in lockstep.rs)
+//              numPlayers, demo playback, camera x (see GameState in lockstep.rs)
 //   [144, ..)  84x84 BGRA frame
 using UndertaleModLib.Compiler;
 using UndertaleModLib.Models;
@@ -96,6 +96,7 @@ var _title = instance_exists(oTitleScreens) && variable_instance_exists(oTitleSc
 buffer_poke(_b, 80, buffer_f64, _title ? oTitleScreens.menuSel : -1);
 buffer_poke(_b, 88, buffer_f64, global.numPlayers);
 buffer_poke(_b, 96, buffer_f64, inRecordOrPlayback());
+buffer_poke(_b, 104, buffer_f64, _run ? camera_get_view_x(view_get_camera(0)) : -1);
 if (!surface_exists(global.rlSurf))
 {
     global.rlSurf = surface_create(84, 84);
