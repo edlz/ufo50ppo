@@ -23,7 +23,7 @@ done
 # Wine resolves the game directory from the exe path, so the exe must be a real file.
 cp "$GAME/ufo50.exe" "$OUT/ufo50.exe"
 
-x86_64-w64-mingw32-gcc -O2 -shared -static-libgcc -o "$OUT/ufo50rl.dll" "$HERE/ufo50rl.c" -lws2_32
+x86_64-w64-mingw32-gcc -O2 -shared -static-libgcc -o "$OUT/ufo50rl.dll" "$HERE/ufo50rl.c" -lws2_32 -luser32
 
 # UndertaleModCli hangs reading stdin unless it is closed.
 dotnet "$UTMT_CLI" load "$GAME/data.win" -s "$HERE/patch.csx" -o "$OUT/data.win" -f < /dev/null > "$OUT/patch.log" 2>&1
