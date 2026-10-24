@@ -139,6 +139,7 @@ Ninpek (internal game ID 34 — internal IDs don't follow library order) reads `
 |--------|-------------|
 | `ufo50ppo` (default, `cargo run --release`) | PPO training entry |
 | `test_lockstep` | Bridge + tracker check with random actions: resets, events, throughput |
+| `record_deaths` | Plays a checkpoint and saves the last 16 frames before each lost life (`runs/ninpek/deaths`) |
 | `test_model` | Model sanity check (no game needed) |
 | `test_train` | PPO smoke test on a synthetic environment |
 
