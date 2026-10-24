@@ -99,9 +99,9 @@ pub(super) fn cleanup_stale_tmp(dir: &str) {
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) == Some("tmp")
-            && let Err(e) = std::fs::remove_file(&path)
-        {
+        let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        let is_tmp = name.ends_with(".tmp") || name.ends_with(".tmp.safetensors");
+        if is_tmp && let Err(e) = std::fs::remove_file(&path) {
             eprintln!("cleanup_stale_tmp: failed to remove {:?}: {}", path, e);
         }
     }
@@ -157,7 +157,8 @@ pub(super) fn save_checkpoint(
     // leaves new-weights-with-old-metadata (recoverable) rather than the inverse
     // (metadata claims progress that the weights don't reflect).
     let path = format!("{}/{}.safetensors", dir, name);
-    let tmp = format!("{}.tmp", path);
+    // tch picks the format from the extension, so the tmp file must still end in .safetensors.
+    let tmp = format!("{}/{}.tmp.safetensors", dir, name);
     if let Err(e) = model.vs.save(&tmp) {
         eprintln!("save_checkpoint: write {} failed: {}", tmp, e);
         let _ = std::fs::remove_file(&tmp);

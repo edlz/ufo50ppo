@@ -147,7 +147,16 @@ pub fn try_load(dir: &str, name: &str, vs: &mut VarStore) -> Result<Option<Resum
     if !std::path::Path::new(&path).exists() {
         return Ok(None);
     }
-    vs.load(&path).map_err(|e| format!("load weights: {}", e))?;
+    if let Err(e) = vs.load(&path) {
+        // Older saves wrote libtorch's format under a .safetensors name; tch only reads that via another extension.
+        let legacy = format!("{}/{}.legacy.ot", dir, name);
+        std::fs::copy(&path, &legacy)
+            .map_err(|e2| format!("load weights: {e}; copy for legacy load: {e2}"))?;
+        let loaded = vs.load(&legacy);
+        let _ = std::fs::remove_file(&legacy);
+        loaded.map_err(|e2| format!("load weights: {e}; legacy format: {e2}"))?;
+        println!("[checkpoint] loaded {path} from the legacy (non-safetensors) format");
+    }
     let state = load_metadata(dir, name)
         .ok_or_else(|| format!("metadata missing or unparseable: {}/{}.json", dir, name))?;
     Ok(Some(state))
