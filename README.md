@@ -1,54 +1,66 @@
 # ufo50ppo
 
-PPO reinforcement learning agent that learns to play [UFO 50](https://50games.fun/) games by capturing the screen and sending keyboard inputs. Windows-only (Linux-portable architecture). The training pipeline is game-agnostic; per-game logic (reward signals, reset sequences, scene detection) lives in `src/games/<name>/`.
+PPO reinforcement learning agent that learns to play [UFO 50](https://50games.fun/) games. The game runs in **lockstep** with the trainer: a patched copy of the game hands each frame (84×84 pixels plus score, lives and state read inside the game) to the trainer over a socket and waits for the next action, so there is no screen capture, no OS-level key injection, and no dependency on window focus. Runs on Windows, macOS (Wine) and headless Linux (Wine + Xvfb). The training pipeline is game-agnostic; per-game logic (rewards, reset handling) lives in `src/games/<name>/`.
 
 ## Requirements
 
-- **Windows 10/11**, ≥16 GB RAM recommended for multi-env training
+- **A copy of UFO 50** (the Steam install folder: `ufo50.exe`, `data.win`, audio groups, ...)
 - **Rust** ≥ 1.85 (edition 2024)
-- **libtorch** — set `LIBTORCH` env var to your libtorch path, add `lib/` to `PATH`
-  - Set `LIBTORCH_BYPASS_VERSION_CHECK=1` if version mismatch
-  - CUDA strongly recommended; the trainer prints a loud warning at startup if it falls back to CPU
-- **UFO 50** running with window title "UFO 50" (one window per env for multi-env)
+- **libtorch** — set `LIBTORCH` to your libtorch path (`LIBTORCH_BYPASS_VERSION_CHECK=1` on version mismatch). CUDA is used when available, Apple MPS on macOS, otherwise CPU (with a loud warning). `build.rs` embeds an rpath on macOS/Linux; on Windows add `lib/` to `PATH`.
+- **To build the patched game** (`bridge/build.sh`): .NET 10 SDK, [UndertaleModTool](https://github.com/UnderminersTeam/UndertaleModTool) built from source (`dotnet build UndertaleModCli -c Release`, after `git submodule update --init`), and `mingw-w64` (`x86_64-w64-mingw32-gcc`). On Windows, run it from Git Bash/MSYS2.
+- **macOS**: Wine (`brew install --cask wine-stable`, needs Rosetta 2) and [DXVK-macOS](https://github.com/Gcenx/DXVK-macOS/releases) — Wine's own Direct3D 11 draws nothing for this game on macOS.
+- **Linux**: `wine`, `xvfb`, Mesa (`libgl1-mesa-dri`) for headless runs.
+
+## Setup
+
+```bash
+# Build the lockstep copy of the game into build/game (your game folder is not modified;
+# its files are symlinked). UTMT_CLI defaults to ~/dev/UndertaleModTool/.../UndertaleModCli.dll.
+bridge/build.sh "/path/to/UFO 50" build/game
+
+# macOS: also drop in DXVK
+DXVK_DIR=/path/to/dxvk-macOS-async-v1.10.3-20230507-repack bridge/build.sh "/path/to/UFO 50" build/game
+```
+
+The patched game behaves like the original unless `UFO50RL_PORT` is set, which the trainer does when it launches it. In lockstep mode it also runs uncapped (no vsync), mutes audio, never writes your save file, high scores or achievements (`global.cheatedNoSave`), and suppresses the title screen's attract-mode demo.
 
 ## Quick Start
 
 ```bash
-# Single-env training (default namespace)
-cargo run --release
+# Train (launches the game copies itself)
+cargo run --release -- -N 4 -n exp4
 
-# Multi-env training: launch N UFO 50 windows first, then
-cargo run --release -- -N 4 -n exp4 -r
+# Headless Linux: same command wrapped in a virtual display
+bridge/headless.sh cargo run --release -- -N 16 -n exp16
 
-# Custom namespace
-cargo run --release -- -n experiment1
+# Check the bridge + tracker without a model: 4 envs, 60 s, random actions
+cargo run --release --bin test_lockstep -- build/game 4 60
 
 # Train with limits (whichever fires first)
 cargo run --release -- -e 100 -f 500000
 cargo run --release -- -m 60
 
-# Debug mode (saves frames + reward breakdown — single-env only)
-cargo run --release -- -d
-
 # View training progress
 tensorboard --logdir runs/<game>
 ```
 
-`cargo run` (no `--bin`) is the training entry point; the `main` binary lives in `src/main.rs` and dispatches to either the single-env or multi-env trainer based on `-N`.
+Throughput: each game copy runs uncapped where it can. On macOS a visible window is held to the display refresh (120 game frames/s per copy on a 120 Hz display), so scale with `-N`; the game's own logic and drawing take ~1 ms per frame.
 
 ## CLI Flags
 
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--namespace` | `-n` | Training namespace (default: "default") |
-| `--num-envs` | `-N` | Number of parallel game instances (default: 1). Requires N existing UFO 50 windows. |
+| `--num-envs` | `-N` | Number of game copies to launch (default: 1) |
+| `--game-dir` | `-g` | Lockstep game copy from `bridge/build.sh` (default: `$UFO50_GAME_DIR` or `build/game`) |
+| `--frame-skip` | `-k` | Game frames per training step / action repeat (default: 4) |
 | `--episodes` | `-e` | Max episodes before stopping |
-| `--frames` | `-f` | Max frames before stopping |
+| `--frames` | `-f` | Max training steps before stopping |
 | `--minutes` | `-m` | Max training time in minutes |
-| `--auto-resume` | `-r` | Single-env: reload `latest` on drain timeout. Multi-env: dead-env detection takes the place of reload-and-retry. |
-| `--debug` | `-d` | Save frames to `debug_frames/ep_NNNN/`, print per-episode reward breakdown (single-env only) |
+| `--auto-resume` | `-r` | Accepted for compatibility; dead-env detection takes the place of reload-and-retry |
+| `--debug` | `-d` | Print per-episode reward breakdown |
 
-Press **Ctrl+C** at any time to save a final checkpoint and exit cleanly.
+Press **Ctrl+C** at any time to save a final checkpoint, close the game copies and exit cleanly.
 
 ## Training Output
 
@@ -69,35 +81,29 @@ Resuming reads `latest.{safetensors,adam,json}` and continues from the saved epi
 
 ## Architecture
 
-The codebase has two trainers that share everything except the per-env loop:
-
-- **Single-env** — `run_training` in `src/train/runner.rs`. Two-thread model: capture pump on the main thread (Win32 message pump requirement), training on a worker thread, mpsc channels between.
-- **Multi-env (sync)** — `run_training_multi` in `src/train/multi.rs`. N capture pump threads + 1 trainer thread. The trainer uses `next_frame_timeout(2s)` as a sync barrier across all alive envs each tick, runs **one** batched inference call (`act_batch`), dispatches actions, and runs PPO updates when all alive envs have filled their per-env buffer. Dead envs (frame timeout, drain timeout, tracker panic) are dropped from the inference batch and the PPO gate. Trainer exits when all envs are dead.
-
 ```
-┌─────────────────────────────────────┐
-│  Platform Layer (src/platform/)     │
-│  GameRunner trait + Win32 impl      │
-│  Capture (D3D11) + Input (PostMsg)  │
-└──────────────┬──────────────────────┘
-               │ GameRunner::next_frame() / execute_action() / pid()
-┌──────────────┴──────────────────────┐
-│  Training Layer (game-agnostic)     │
-│  FrameStack → ActorCritic → PPO    │
-│  Custom Adam (persistent state)     │
-│  RunningMeanStd reward normalization│
-│  GameTracker (per-game rewards)     │
-│  Atomic checkpoints + TensorBoard   │
-└─────────────────────────────────────┘
+┌──────────── game process (×N) ─────────────┐        ┌──────── trainer ─────────┐
+│ ufo50.exe + patched data.win               │        │ LockstepGame (GameRunner)│
+│  oController Post Draw, every k frames:    │ frame  │ GameTracker (state-based │
+│   84×84 frame + state ───────────────────► │ ─────► │  rewards / done / reset) │
+│   blocks in ufo50rl.dll until reply ◄───── │ ◄───── │ FrameStack → ActorCritic │
+│  scrGetInput reads the replied keys        │ action │  → PPO (batched over N)  │
+└────────────────────────────────────────────┘ (TCP)  └──────────────────────────┘
 ```
 
-In multi-env, `host_multi` enumerates all matching game windows, spawns one capture pump per window on its own thread, and passes a `Vec<(WindowInfo, Box<dyn GameRunner>)>` to the trainer. Each tracker is constructed with its env's specific PID so any process-memory readers attach to the right game process.
+- **`bridge/`** — `ufo50rl.c` (GameMaker extension DLL: TCP client, blocking `rl_step`), `patch.csx` (UndertaleModTool script that registers the DLL and injects the sync point, state export and input override), `build.sh`, `headless.sh`. The wire layout is documented at the top of `patch.csx` and mirrored in `src/platform/lockstep.rs`.
+- **`src/platform/`** — `GameRunner` trait, the lockstep implementation (launches the game, under Wine off Windows), and the action → key table.
+- **`src/train/multi.rs`** — the trainer. Each tick it reads one frame from every alive env (each game is blocked waiting for its action), runs **one** batched inference call, and answers every env; the games then advance concurrently until the next tick. PPO updates run when all alive envs have filled their per-env buffer. Dead envs (connection lost or timed out) are dropped; the trainer exits when none remain.
+
+Input goes through the game's own `scrGetInput`, not the OS keyboard, because GameMaker ignores keyboard state for unfocused windows — with several game windows only one would receive input.
 
 ## Reward Pipeline
 
-Per-game `GameTracker` impls emit `FrameResult { reward, done, event_name, is_menu, ... }` per frame. The trainer adds **reward normalization** (`RunningMeanStd`, Welford) on top: each reward is divided by the running std of the discounted return before GAE, stabilizing training across reward distribution shifts. The normalizer state persists across resumes via `latest.json`.
+Per-game `GameTracker` impls turn each `Frame` (pixels + `GameState` from inside the game) into `FrameResult { reward, done, event_name, is_menu, ... }`. The trainer adds **reward normalization** (`RunningMeanStd`, Welford) on top: each reward is divided by the running std of the discounted return before GAE, stabilizing training across reward distribution shifts. The normalizer state persists across resumes via `latest.json`.
 
-Trackers can read game state via pixel detectors (`game_over.rs`-style scene matching) or via process memory (`MemReader` + Cheat Engine pointer chains, see `ninpek/mem.rs` for an example). `observe_idle` lets a tracker block the post-reset drain until the game is back in a fresh playable state. `is_menu` marks frames that should be skipped from the PPO rollout.
+After a reset the trainer calls `observe_idle` each frame; it returns the action to send (e.g. to get through the title screen) until a fresh run is playable. `is_menu` marks frames that are skipped from the PPO rollout.
+
+Ninpek (internal game ID 34 — internal IDs don't follow library order) reads `o34_Mas`: `points[0]`, `life[0]` (-1 = game over), `state` (20 playing, 50 game over, 60–70 intro, 80+ win), and `iWater` (stage section) for the stage reward.
 
 ## TensorBoard Metrics
 
@@ -120,10 +126,10 @@ Trackers can read game state via pixel detectors (`game_over.rs`-style scene mat
 - **Atomic checkpoint writes** — weights, Adam state, and metadata each go through `.tmp` + rename. Crash mid-save can't corrupt the existing checkpoint. Stale `.tmp` files from prior crashes are swept at startup.
 - **Persistent Adam state** — custom Adam optimizer (`src/train/adam.rs`) with `save_state` / `load_state`. Resumes preserve `m`, `v`, and step counter exactly. **9 unit tests** verify the math.
 - **Reward normalizer persistence** — running mean/var/count saved in `latest.json`, restored on resume. **6 unit tests** including the count<2 edge case.
-- **Per-env panic safety** (multi-env) — tracker panics in `process_frame` / `observe_idle` are caught with `catch_unwind`. The offending env is marked dead and the trainer continues with survivors.
+- **Per-env panic safety** — tracker panics in `process_frame` / `observe_idle` are caught with `catch_unwind`; the tracker is rebuilt and the game relaunched.
 - **NaN guards** — PPO update skips minibatches with non-finite loss or gradient instead of propagating to the optimizer.
-- **CUDA detection warning** — startup prints a loud warning if `cuda_if_available` returns CPU.
-- **Ctrl+C graceful shutdown** — Win32 console handler flips a static flag; trainer saves a final checkpoint and exits.
+- **GPU detection warning** — startup prints a loud warning when neither CUDA nor MPS is available.
+- **Ctrl+C graceful shutdown** — a signal handler (Ctrl+C / SIGTERM) flips a static flag; trainer saves a final checkpoint, quits the game copies and exits.
 - **Save-failure escalation** — `save_checkpoint` tracks consecutive failures across the process; after 3 in a row it triggers shutdown so unattended runs don't silently lose hours of work.
 - **Run metadata** — every trainer startup appends a JSON line to `run_metadata.jsonl` with git hash, dirty flag, hyperparam snapshot, and start time.
 
@@ -131,20 +137,14 @@ Trackers can read game state via pixel detectors (`game_over.rs`-style scene mat
 
 | Binary | Description |
 |--------|-------------|
-| `ufo50ppo` (default, `cargo run --release`) | PPO training entry — single or multi-env via `-N` |
-| `test_ninpek` | Live reward testing for Ninpek (single-env diagnostic) |
-| `test_reset` | Reset-sequence cycle test for tuning input timings |
+| `ufo50ppo` (default, `cargo run --release`) | PPO training entry |
+| `test_lockstep` | Bridge + tracker check with random actions: resets, events, throughput |
 | `test_model` | Model sanity check (no game needed) |
 | `test_train` | PPO smoke test on a synthetic environment |
-| `test_multi_capture` | Multi-env capture-only smoke test (no training) |
-| `bench_capture` | Capture+downscale FPS benchmark |
 
 ## Adding a New Game
 
-1. Create `src/games/yourgame/` with at minimum: `mod.rs`, `tracker.rs`, `rewards.rs`, `events.rs` (event-name constants). Add `mem.rs` if you have process-memory pointer chains; add `game_over.rs` (or similar) if you need pixel-based scene detection.
-2. Implement `GameTracker` for `YourGameTracker`. Required: `process_frame`, `reset_sequence`, `game_name`, `obs_width`, `obs_height`, `num_actions`. Optional overrides: `observe_idle` (default `true` — set this if you have a fresh-state check), `reset_episode` (default no-op), `reset_tap_ms` (default 25 ms), `episode_breakdown` (default empty).
-3. In `src/games/yourgame/mod.rs`, expose `pub const WINDOW_TITLE: &str = "..."` and `pub fn definition() -> GameDefinition` with the title, obs dims, action count, tracker factory `fn(width: u32, pid: u32) -> Box<dyn GameTracker>`, hyperparameters, and `debug_frame_suffix`. The factory's `pid` argument is the OS process ID of the env's game window — pass it through to `MemReader::for_pid(pid)` if you read process memory; ignore it otherwise.
-4. Edit `src/main.rs` to use `games::yourgame::definition()` instead of `games::ninpek::definition()` (or add a CLI flag to switch games).
-5. Pixel detectors should be calibrated against a reference obs resolution and scaled at runtime — see `ninpek/game_over.rs` for the `s_x` / `s_y` / `s_count` pattern. The helpers are private to each game.
-
-No edits to `train::runner`, `train::multi`, `platform::host`, or any other shared code.
+1. Find the game's internal ID and controller object in a decompile of `data.win` (UndertaleModCli `dump -c UMT_DUMP_ALL`). Library slot → ID comes from the order of the `scrNN_Meta(nGame)` calls; `scrNN_Meta` also names the game's room.
+2. Export the state you need from `bridge/patch.csx` (free slots after index 10 of the 16-f64 state block) and add matching fields to `GameState` in `src/platform/lockstep.rs`.
+3. Create `src/games/yourgame/` with `mod.rs`, `tracker.rs`, `rewards.rs`, `events.rs`. Implement `GameTracker`: `process_frame`, `observe_idle` (actions to reach a fresh run, `None` once playable), `game_name`, `num_actions`; optionally `reset_episode` and `episode_breakdown`.
+4. Expose `pub fn definition() -> GameDefinition` with the game ID, obs dims, action count, tracker factory and hyperparameters, and point `src/main.rs` at it.

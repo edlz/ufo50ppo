@@ -1,0 +1,191 @@
+// UndertaleModCli script: registers ufo50rl.dll and adds the lockstep sync point to oController.
+// Shared buffer layout (must match src/platform/lockstep.rs):
+//   [0, 8)     keys to hold (VK codes, 0 = empty), written by the trainer
+//   [8, 12)    u32 frames to run before the next sync (min 1)
+//   [12, 16)   u32 flags: 1 = quit, 2 = launch game (id in bits 8..15)
+//   [16, 144)  16 x f64 game state: frame, room, game id, paused, then Ninpek's
+//              o34_Mas points[0], life[0], state, iWater, then title menuSel,
+//              numPlayers, demo playback (see GameState in lockstep.rs)
+//   [144, ..)  84x84 BGRA frame
+using UndertaleModLib.Compiler;
+using UndertaleModLib.Models;
+
+UndertaleString S(string s) => Data.Strings.MakeString(s);
+
+uint nextId = 0;
+foreach (var e in Data.Extensions)
+    foreach (var f in e.Files)
+        foreach (var fn in f.Functions)
+            nextId = Math.Max(nextId, fn.ID);
+
+UndertaleExtensionFunction Fn(string name, params UndertaleExtensionVarType[] args)
+{
+    var fn = new UndertaleExtensionFunction { Name = S(name), ExtName = S(name), ID = ++nextId, Kind = 11, RetType = UndertaleExtensionVarType.Double };
+    foreach (var a in args)
+        fn.Arguments.Add(new UndertaleExtensionFunctionArg { Type = a });
+    Data.Functions.EnsureDefined(name, Data.Strings);
+    return fn;
+}
+
+// Mirrors how the game's Steamworks DLL is registered.
+var file = new UndertaleExtensionFile { Filename = S("ufo50rl.dll"), InitScript = S(""), CleanupScript = S(""), Kind = Data.Extensions[0].Files[0].Kind };
+file.Functions.Add(Fn("rl_init"));
+file.Functions.Add(Fn("rl_step", UndertaleExtensionVarType.String, UndertaleExtensionVarType.Double));
+var ext = new UndertaleExtension { Name = S("ufo50rl"), ClassName = S(""), Version = S("1.0.0"), FolderName = S("") };
+ext.Files.Add(file);
+Data.Extensions.Add(ext);
+Data.FORM.EXTN.productIdData.Add(new byte[16]);
+Data.GlobalFunctions = null;
+
+var g = new CodeImportGroup(Data);
+
+g.QueueAppend("gml_Object_oController_Create_0", @"
+global.rlOn = rl_init();
+if (global.rlOn)
+{
+    global.rlBuf = buffer_create(28368, buffer_fixed, 1);
+    global.rlSurf = -1;
+    global.rlKeys = array_create(8, 0);
+    global.rlPrevKeys = array_create(8, 0);
+    global.rlWait = 0;
+    global.rlFrame = 0;
+    audio_master_gain(0);
+}
+");
+
+g.QueueReplace("gml_Object_oController_Draw_77", @"
+if (!global.rlOn)
+{
+    exit;
+}
+game_set_speed(10000, gamespeed_fps);
+// Keeps training runs out of the player's save file, high scores and achievements.
+global.cheatedNoSave = true;
+global.rlPrevKeys = global.rlKeys;
+// An idle title screen starts a recorded demo that ignores input.
+with (oTitleScreens)
+{
+    attractTimer = 0;
+}
+global.rlFrame++;
+// scrInitDisplay turns vsync on at startup, and the default timing method also waits on vblanks.
+if (global.rlFrame == 2)
+{
+    display_reset(0, false);
+    display_set_timing_method(tm_sleep);
+    display_set_sleep_margin(0);
+}
+if (global.rlWait > 0)
+{
+    global.rlWait--;
+    exit;
+}
+var _b = global.rlBuf;
+buffer_poke(_b, 16, buffer_f64, global.rlFrame);
+buffer_poke(_b, 24, buffer_f64, room);
+buffer_poke(_b, 32, buffer_f64, global.currGameID);
+buffer_poke(_b, 40, buffer_f64, global.paused);
+// o34_Mas exists on the title screen before its run arrays are set.
+var _mas = instance_exists(o34_Mas);
+var _run = _mas && variable_instance_exists(o34_Mas, ""points"") && variable_instance_exists(o34_Mas, ""life"");
+buffer_poke(_b, 48, buffer_f64, _run ? o34_Mas.points[0] : -1);
+buffer_poke(_b, 56, buffer_f64, _run ? o34_Mas.life[0] : -99);
+buffer_poke(_b, 64, buffer_f64, (_mas && variable_instance_exists(o34_Mas, ""state"")) ? o34_Mas.state : -1);
+buffer_poke(_b, 72, buffer_f64, (_run && variable_instance_exists(o34_Mas, ""iWater"")) ? o34_Mas.iWater : -1);
+var _title = instance_exists(oTitleScreens) && variable_instance_exists(oTitleScreens, ""menuSel"");
+buffer_poke(_b, 80, buffer_f64, _title ? oTitleScreens.menuSel : -1);
+buffer_poke(_b, 88, buffer_f64, global.numPlayers);
+buffer_poke(_b, 96, buffer_f64, inRecordOrPlayback());
+if (!surface_exists(global.rlSurf))
+{
+    global.rlSurf = surface_create(84, 84);
+}
+surface_set_target(global.rlSurf);
+draw_clear(c_black);
+draw_surface_stretched(application_surface, 0, 0, 84, 84);
+surface_reset_target();
+buffer_get_surface(_b, global.rlSurf, 144);
+if (!rl_step(buffer_get_address(_b), 28368))
+{
+    game_end();
+    exit;
+}
+var _keys = array_create(8, 0);
+for (var i = 0; i < 8; i++)
+{
+    _keys[i] = buffer_peek(_b, i, buffer_u8);
+}
+global.rlKeys = _keys;
+global.rlWait = max(1, buffer_peek(_b, 8, buffer_u32)) - 1;
+var _flags = buffer_peek(_b, 12, buffer_u32);
+if (_flags & 1)
+{
+    game_end();
+}
+if (_flags & 2)
+{
+    var _id = (_flags >> 8) & 255;
+    var _slot = 0;
+    for (var i = 1; i <= global.NUM_GAMES; i++)
+    {
+        if (global.mGameID[i] == _id)
+        {
+            _slot = i;
+        }
+    }
+    if (global.paused)
+    {
+        scrUnpause();
+    }
+    global.attractMode = false;
+    global.playbackMode = false;
+    // Same sequence as the in-game launchers (o51_LX2): the title screen waits until this data is loaded.
+    load_datagroup(_id, true, true);
+    scrPlayGame(_slot);
+}
+");
+
+// GameMaker drops keyboard state for unfocused windows, so with several game windows only one
+// would see simulated key presses. Feed the trainer's keys straight into the game's input script.
+// Keys are matched against the default bindings (arrows, X = fire1, Z = fire2, D/Esc = start).
+// The script holds `function scrGetInput(arg0)`, so the code goes inside the body, ahead of its first line.
+g.QueueFindReplace("gml_GlobalScript_scrGetInput", "var key_map = global.keyMap[arg0];", @"
+if (variable_global_exists(""rlOn"") && global.rlOn)
+{
+    var _k = (arg0 == 0) ? global.rlKeys : [];
+    var _p = (arg0 == 0) ? global.rlPrevKeys : [];
+    holdUp = array_contains(_k, vk_up);
+    holdDown = array_contains(_k, vk_down);
+    holdLeft = array_contains(_k, vk_left);
+    holdRight = array_contains(_k, vk_right);
+    pressUp = holdUp && !array_contains(_p, vk_up);
+    pressDown = holdDown && !array_contains(_p, vk_down);
+    pressLeft = holdLeft && !array_contains(_p, vk_left);
+    pressRight = holdRight && !array_contains(_p, vk_right);
+    fire1 = array_contains(_k, 88);
+    fire2 = array_contains(_k, 90);
+    fire1pressed = fire1 && !array_contains(_p, 88);
+    fire2pressed = fire2 && !array_contains(_p, 90);
+    fire1released = !fire1 && array_contains(_p, 88);
+    fire2released = !fire2 && array_contains(_p, 90);
+    var _start = array_contains(_k, 68) || array_contains(_k, vk_escape);
+    pressStart = _start && !(array_contains(_p, 68) || array_contains(_p, vk_escape));
+    if (holdLeft && holdRight)
+    {
+        holdLeft = false;
+        holdRight = false;
+        pressLeft = false;
+        pressRight = false;
+    }
+    if (holdUp && holdDown)
+    {
+        holdUp = false;
+        holdDown = false;
+        pressUp = false;
+        pressDown = false;
+    }
+    exit;
+}
+var key_map = global.keyMap[arg0];");
+
+g.Import();

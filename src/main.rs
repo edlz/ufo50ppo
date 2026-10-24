@@ -1,9 +1,11 @@
 use ufo50ppo::games;
+use ufo50ppo::platform::GameRunner;
+use ufo50ppo::platform::lockstep::LockstepGame;
 use ufo50ppo::train::multi::run_training_multi;
 use ufo50ppo::train::runner::TrainingConfig;
 use ufo50ppo::util::cli;
 
-fn main() -> windows::core::Result<()> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = cli::parse_train_args("default");
     let mut game = games::ninpek::definition();
 
@@ -17,22 +19,37 @@ fn main() -> windows::core::Result<()> {
     }
 
     println!(
-        "Training {} | ns: {} | {}x{} | envs: {}",
-        game.name, args.namespace, game.obs_width, game.obs_height, num_envs
+        "Training {} | ns: {} | {}x{} | envs: {} | frame skip: {} | game: {}",
+        game.name,
+        args.namespace,
+        game.obs_width,
+        game.obs_height,
+        num_envs,
+        args.frame_skip,
+        args.game_dir.display()
     );
     if let Some(n) = args.max_episodes {
         println!("  Max episodes: {}", n);
     }
 
-    let cfg = TrainingConfig::from_args(args, game.name);
-
-    ufo50ppo::platform::win32::host_multi(
-        game.window_title,
+    let games = LockstepGame::launch_many(
+        &args.game_dir,
         num_envs as usize,
-        game.obs_width,
-        game.obs_height,
-        move |runners| {
-            run_training_multi(runners, game, cfg);
-        },
+        args.frame_skip,
+        game.game_id,
     )
+    .map_err(|e| {
+        format!(
+            "launching {}: {e} (build it with bridge/build.sh)",
+            args.game_dir.display()
+        )
+    })?;
+    let runners: Vec<Box<dyn GameRunner>> = games
+        .into_iter()
+        .map(|g| Box::new(g) as Box<dyn GameRunner>)
+        .collect();
+
+    let cfg = TrainingConfig::from_args(args, game.name);
+    run_training_multi(runners, game, cfg);
+    Ok(())
 }

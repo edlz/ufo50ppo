@@ -6,6 +6,10 @@ pub struct TrainArgs {
     pub auto_resume: bool,
     pub debug: bool,
     pub num_envs: u32,
+    /// Lockstep game copy built by bridge/build.sh.
+    pub game_dir: std::path::PathBuf,
+    /// Game frames per training step (action repeat).
+    pub frame_skip: u32,
 }
 
 fn parse_or_die<T: std::str::FromStr>(val: &str, flag: &str) -> T {
@@ -31,6 +35,10 @@ pub fn parse_train_args(default_namespace: &str) -> TrainArgs {
     let mut auto_resume = false;
     let mut debug = false;
     let mut num_envs: u32 = 1;
+    let mut game_dir = std::env::var_os("UFO50_GAME_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| "build/game".into());
+    let mut frame_skip: u32 = 4;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -69,6 +77,18 @@ pub fn parse_train_args(default_namespace: &str) -> TrainArgs {
                     std::process::exit(2);
                 }
             }
+            "--game-dir" | "-g" => {
+                i += 1;
+                game_dir = require_value(&args, i, "--game-dir").into();
+            }
+            "--frame-skip" | "-k" => {
+                i += 1;
+                frame_skip = parse_or_die(require_value(&args, i, "--frame-skip"), "--frame-skip");
+                if frame_skip == 0 {
+                    eprintln!("error: --frame-skip must be >= 1");
+                    std::process::exit(2);
+                }
+            }
             other => {
                 eprintln!("error: unknown argument '{}'", other);
                 std::process::exit(2);
@@ -84,5 +104,7 @@ pub fn parse_train_args(default_namespace: &str) -> TrainArgs {
         auto_resume,
         debug,
         num_envs,
+        game_dir,
+        frame_skip,
     }
 }

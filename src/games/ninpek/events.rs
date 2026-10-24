@@ -6,3 +6,4 @@ pub const LIFE_LOST: &str = "LIFE-";
 pub const STAGE: &str = "STAGE";
 pub const WIN: &str = "WIN";
 pub const GAME_OVER: &str = "GAME OVER";
+pub const EXITED: &str = "EXITED";

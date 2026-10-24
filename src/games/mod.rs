@@ -1,11 +1,6 @@
 pub mod ninpek;
 
-pub struct Region {
-    pub x: u32,
-    pub y: u32,
-    pub w: u32,
-    pub h: u32,
-}
+use crate::platform::Frame;
 
 pub struct FrameResult {
     pub reward: f64,
@@ -17,27 +12,15 @@ pub struct FrameResult {
 }
 
 pub trait GameTracker: Send {
-    fn process_frame(&mut self, pixels: &[u8]) -> FrameResult;
+    fn process_frame(&mut self, frame: &Frame) -> FrameResult;
 
-    /// Default returns true so games without an idle-state check skip the drain.
-    fn observe_idle(&mut self, _pixels: &[u8]) -> bool {
-        true
-    }
+    /// Called each frame after a reset until a fresh run is playable. Returns `None` once ready,
+    /// otherwise the action to send this frame (e.g. to get past a title screen).
+    fn observe_idle(&mut self, frame: &Frame) -> Option<usize>;
 
     fn reset_episode(&mut self) {}
 
-    /// Reset key sequence; `vk_noop(ms)` encodes inline waits between presses.
-    fn reset_sequence(&self) -> &[usize];
-
-    fn reset_tap_ms(&self) -> u64 {
-        crate::platform::win32::input::DEFAULT_RESET_TAP_MS
-    }
-
     fn game_name(&self) -> &str;
-
-    fn obs_width(&self) -> u32;
-
-    fn obs_height(&self) -> u32;
 
     fn num_actions(&self) -> usize;
 

@@ -170,18 +170,17 @@ pub fn update(
     let device = model.vs.device();
     let n = buffer.len() as i64;
 
+    // Cast before moving: MPS has no float64.
     let f32_tensor = |slice: &[f64]| {
         Tensor::from_slice(slice)
-            .to_device(device)
             .to_kind(Kind::Float)
+            .to_device(device)
             .detach()
     };
 
     let obs_batch = Tensor::cat(&buffer.obs, 0);
     let actions_t = Tensor::from_slice(&buffer.actions).to_device(device);
-    let old_log_probs_t = Tensor::from_slice(&buffer.log_probs)
-        .to_device(device)
-        .detach();
+    let old_log_probs_t = f32_tensor(&buffer.log_probs);
     let old_values_t = f32_tensor(&buffer.values);
     let advantages_t = f32_tensor(advantages);
     let returns_t = f32_tensor(returns);

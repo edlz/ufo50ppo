@@ -1,20 +1,19 @@
 // Synchronous multi-env PPO trainer.
 //
-// Architecture: N capture pumps (one per game window, spawned by host_multi) feed frames
-// into this trainer thread via channels. Each tick the trainer captures from all N envs
-// at a sync barrier, runs a single batched inference pass, and dispatches actions back.
+// Architecture: N lockstep game processes. Each tick the trainer reads one frame from every
+// env (each game is blocked waiting for its action), runs a single batched inference pass,
+// and answers all envs, which then advance concurrently until the next tick.
 //
 // Per-env state machine:
 //   - Active:   normal training (process_frame, push to rollout buffer, do inference)
-//   - Draining: post-reset wait (observe_idle each tick, send noop until fresh state)
+//   - Draining: post-reset wait (observe_idle each tick, sending its actions until a fresh run starts)
 //
 // PPO update fires when ALL envs have at least `rollout_len` transitions in their buffer.
 // GAE is computed independently per env (preserving trajectory boundaries), then
 // concatenated into one big batch for the actual gradient update.
 
 use crate::games::GameTracker;
-use crate::platform::GameRunner;
-use crate::platform::win32::WindowInfo;
+use crate::platform::{Frame, GameRunner};
 use crate::train;
 use crate::train::model::ActorCritic;
 use crate::train::ppo::{PpoConfig, RolloutBuffer, compute_gae};
@@ -37,12 +36,12 @@ struct PrevStep {
 }
 
 pub fn run_training_multi(
-    runners_with_info: Vec<(WindowInfo, Box<dyn GameRunner>)>,
+    mut runners: Vec<Box<dyn GameRunner>>,
     game: GameDefinition,
     cfg: TrainingConfig,
 ) {
     train::runner::reset_save_failure_counter();
-    let n = runners_with_info.len();
+    let n = runners.len();
     if n == 0 {
         eprintln!("run_training_multi: no envs provided");
         return;
@@ -68,14 +67,10 @@ pub fn run_training_multi(
     let training_start = std::time::Instant::now();
     let max_duration = max_minutes.map(|m| std::time::Duration::from_secs(m * 60));
 
-    let env_pids: Vec<u32> = runners_with_info.iter().map(|(info, _)| info.pid).collect();
-    let mut runners: Vec<Box<dyn GameRunner>> =
-        runners_with_info.into_iter().map(|(_, r)| r).collect();
-
     let w = runners[0].obs_width();
     let h = runners[0].obs_height();
-    let device = tch::Device::cuda_if_available();
-    println!("[multi] N={} envs | pids={:?}", n, env_pids);
+    let device = train::runner::pick_device();
+    println!("[multi] N={} envs", n);
     train::runner::log_device(device);
 
     let hp = &game.hyperparams;
@@ -87,9 +82,7 @@ pub fn run_training_multi(
     };
     let mut logger = crate::util::logger::TbLogger::new(&runs_dir, 0);
 
-    let mut trackers: Vec<Box<dyn GameTracker>> = (0..n)
-        .map(|i| (game.make_tracker)(w, env_pids[i]))
-        .collect();
+    let mut trackers: Vec<Box<dyn GameTracker>> = (0..n).map(|_| (game.make_tracker)()).collect();
     let mut frame_stacks: Vec<FrameStack> = (0..n)
         .map(|_| FrameStack::new(device, game.obs_width))
         .collect();
@@ -103,8 +96,8 @@ pub fn run_training_multi(
     // Most recent finished episode reward per env — used for the spread metric and the
     // health log. Set to NaN until each env has finished its first episode.
     let mut last_ep_reward: Vec<f64> = vec![f64::NAN; n];
-    // Per-env liveness. Only set to false when the capture pump disconnects (game window
-    // closed). Drain timeouts and tracker panics retry the reset instead of killing.
+    // Per-env liveness. Only set to false when the game connection drops or times out.
+    // Drain timeouts and tracker panics retry the reset instead of killing.
     let mut alive: Vec<bool> = vec![true; n];
     // When each env entered the Draining state, for per-env drain timeout enforcement.
     let mut drain_started: Vec<Option<std::time::Instant>> =
@@ -176,14 +169,15 @@ pub fn run_training_multi(
 
     // Initial reset for all envs — kicks them into Draining state.
     for i in 0..n {
-        runners[i].reset_game(trackers[i].reset_sequence(), trackers[i].reset_tap_ms());
+        runners[i].reset_game();
         trackers[i].reset_episode();
     }
 
     let mut last_log = std::time::Instant::now();
     let mut last_log_frames = total_frames;
 
-    const FRAME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+    // Generous: a relaunch loads the game's textures and audio while the env is blocked.
+    const FRAME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
     // ─── main loop ────────────────────────────────────────────────────────────
     'outer: loop {
@@ -192,24 +186,21 @@ pub fn run_training_multi(
             break 'outer;
         }
 
-        // 1. Capture from all alive envs (sync barrier with per-env timeout). A disconnect
+        // 1. Read a frame from all alive envs (sync barrier with per-env timeout). A disconnect
         // marks the env dead; the loop continues with N-1 envs until none remain.
-        let mut pixels: Vec<Vec<u8>> = vec![Vec::new(); n];
+        let mut frames: Vec<Option<Frame>> = (0..n).map(|_| None).collect();
         let frames_before_tick = total_frames;
         for i in 0..n {
             if !alive[i] {
                 continue;
             }
             match runners[i].next_frame_timeout(FRAME_TIMEOUT) {
-                Ok(p) => {
-                    pixels[i] = p;
+                Ok(f) => {
+                    frames[i] = Some(f);
                     total_frames += 1;
                 }
                 Err(e) => {
-                    eprintln!(
-                        "[multi] env {} capture disconnected: {} — env is dead",
-                        i, e
-                    );
+                    eprintln!("[multi] env {} disconnected: {} — env is dead", i, e);
                     alive[i] = false;
                 }
             }
@@ -227,11 +218,13 @@ pub fn run_training_multi(
             if !alive[i] {
                 continue;
             }
+            let Some(frame) = frames[i].as_ref() else {
+                continue;
+            };
             match env_state[i] {
                 EnvState::Draining => {
-                    runners[i].execute_action(0);
-                    // Per-env drain timeout: retry the reset sequence if observe_idle
-                    // hasn't returned true within DRAIN_TIMEOUT.
+                    // Per-env drain timeout: relaunch if observe_idle hasn't reported a
+                    // playable run within DRAIN_TIMEOUT.
                     if let Some(start) = drain_started[i]
                         && start.elapsed() > crate::train::runner::DRAIN_TIMEOUT
                     {
@@ -240,48 +233,46 @@ pub fn run_training_multi(
                             i,
                             start.elapsed()
                         );
-                        runners[i]
-                            .reset_game(trackers[i].reset_sequence(), trackers[i].reset_tap_ms());
+                        runners[i].reset_game();
                         trackers[i].reset_episode();
                         drain_started[i] = Some(std::time::Instant::now());
+                        runners[i].execute_action(0);
                         continue;
                     }
-                    let pixels_i = &pixels[i];
+                    let frame_i = frame;
                     let observe_result =
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            trackers[i].observe_idle(pixels_i)
+                            trackers[i].observe_idle(frame_i)
                         }));
                     match observe_result {
-                        Ok(true) => {
+                        Ok(None) => {
                             env_state[i] = EnvState::Active;
                             drain_started[i] = None;
                             frame_stacks[i].reset();
+                            runners[i].execute_action(0);
                         }
-                        Ok(false) => {}
+                        Ok(Some(action)) => runners[i].execute_action(action),
                         Err(_) => {
                             eprintln!(
                                 "[multi] env {} tracker.observe_idle panicked — rebuilding tracker and retrying reset",
                                 i
                             );
-                            trackers[i] = (game.make_tracker)(w, env_pids[i]);
+                            trackers[i] = (game.make_tracker)();
                             frame_stacks[i].reset();
-                            runners[i].reset_game(
-                                trackers[i].reset_sequence(),
-                                trackers[i].reset_tap_ms(),
-                            );
+                            runners[i].reset_game();
                             trackers[i].reset_episode();
                             prev[i] = None;
                             return_acc[i] = 0.0;
                             drain_started[i] = Some(std::time::Instant::now());
+                            runners[i].execute_action(0);
                             continue;
                         }
                     }
                 }
                 EnvState::Active => {
-                    let pixels_i = &pixels[i];
                     let process_result =
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            trackers[i].process_frame(pixels_i)
+                            trackers[i].process_frame(frame)
                         }));
                     let result = match process_result {
                         Ok(r) => r,
@@ -290,12 +281,9 @@ pub fn run_training_multi(
                                 "[multi] env {} tracker.process_frame panicked — rebuilding tracker and retrying reset",
                                 i
                             );
-                            trackers[i] = (game.make_tracker)(w, env_pids[i]);
+                            trackers[i] = (game.make_tracker)();
                             frame_stacks[i].reset();
-                            runners[i].reset_game(
-                                trackers[i].reset_sequence(),
-                                trackers[i].reset_tap_ms(),
-                            );
+                            runners[i].reset_game();
                             trackers[i].reset_episode();
                             prev[i] = None;
                             return_acc[i] = 0.0;
@@ -354,10 +342,7 @@ pub fn run_training_multi(
                                 &reward_norm,
                                 &opt,
                             );
-                            runners[i].reset_game(
-                                trackers[i].reset_sequence(),
-                                trackers[i].reset_tap_ms(),
-                            );
+                            runners[i].reset_game();
                             trackers[i].reset_episode();
                             prev[i] = None;
                             return_acc[i] = 0.0;
@@ -407,8 +392,7 @@ pub fn run_training_multi(
                             &reward_norm,
                             &opt,
                         );
-                        runners[i]
-                            .reset_game(trackers[i].reset_sequence(), trackers[i].reset_tap_ms());
+                        runners[i].reset_game();
                         trackers[i].reset_episode();
                         prev[i] = None;
                         return_acc[i] = 0.0;
@@ -423,7 +407,7 @@ pub fn run_training_multi(
                         continue;
                     }
 
-                    let obs = frame_stacks[i].push(&pixels[i], w, h);
+                    let obs = frame_stacks[i].push(&frame.pixels, w, h);
                     active_envs.push(i);
                     active_obs.push(obs);
                     episode_frames[i] += 1;
