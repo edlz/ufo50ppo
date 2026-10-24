@@ -17,6 +17,7 @@ pub struct NinpekTracker {
     left_old_run: bool,
     idle_ticks: u32,
     ep_scores: u32,
+    ep_kills: u32,
     ep_life_gained: u32,
     ep_life_lost: u32,
     ep_stages: u32,
@@ -32,6 +33,7 @@ impl NinpekTracker {
             left_old_run: false,
             idle_ticks: 0,
             ep_scores: 0,
+            ep_kills: 0,
             ep_life_gained: 0,
             ep_life_lost: 0,
             ep_stages: 0,
@@ -78,12 +80,23 @@ impl NinpekTracker {
         let score_delta = s.points - p.points;
         let lives_delta = s.lives - p.lives;
         let zone_delta = s.zone - p.zone;
+        // Several kills can land in one step, so they are counted here rather than per event.
+        let kills = if p.kills >= 0.0 {
+            (s.kills - p.kills).max(0.0)
+        } else {
+            0.0
+        };
 
         let mut reward = 0.0;
         let mut event = "";
         if score_delta > 0.0 {
             reward += rewards::SCORE_UP * score_delta / rewards::POINTS_PER_PICKUP;
             event = events::SCORE;
+        }
+        if kills > 0.0 {
+            reward += rewards::KILL * kills;
+            event = events::KILL;
+            self.ep_kills += kills as u32;
         }
         if zone_delta > 0 {
             reward += rewards::STAGE_COMPLETE;
@@ -151,10 +164,11 @@ impl GameTracker for NinpekTracker {
 
     fn episode_breakdown(&self) -> String {
         format!(
-            "  furthest x: {:.0} (section {}) | scores: {} | stages: {} | life+: {} | life-: {} | survival: {:.1}",
+            "  furthest x: {:.0} (section {}) | scores: {} | kills: {} | stages: {} | life+: {} | life-: {} | survival: {:.1}",
             self.ep_max_x,
             self.ep_max_zone,
             self.ep_scores,
+            self.ep_kills,
             self.ep_stages,
             self.ep_life_gained,
             self.ep_life_lost,
@@ -166,6 +180,7 @@ impl GameTracker for NinpekTracker {
         vec![
             ("furthest_x", self.ep_max_x),
             ("furthest_section", self.ep_max_zone as f64),
+            ("kills", self.ep_kills as f64),
         ]
     }
 

@@ -45,6 +45,8 @@ pub struct GameState {
     pub demo: bool,
     /// Ninpek: camera x, i.e. how far the run has scrolled; -1 outside a run.
     pub view_x: f64,
+    /// Ninpek: global.g34_totalKills, enemies killed this run; -1 outside a run.
+    pub kills: f64,
 }
 
 pub struct LockstepGame {
@@ -189,6 +191,7 @@ impl LockstepGame {
             num_players: f(9) as i32,
             demo: f(10) != 0.0,
             view_x: f(11),
+            kills: f(12),
         }
     }
 
