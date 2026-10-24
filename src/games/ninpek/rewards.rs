@@ -6,6 +6,8 @@ pub const KILL: f64 = 1.0;
 pub const BOSS_HIT: f64 = 1.0;
 pub const LIFE_GAINED: f64 = 1.0;
 pub const LIFE_LOST: f64 = -1.0;
+/// Per pixel the camera scrolls past its furthest point this run (~150 over the level).
+pub const PROGRESS: f64 = 0.01;
 /// Entering the next stage section (o34_Mas.iWater advancing).
 pub const STAGE_COMPLETE: f64 = 10.0;
 pub const WIN: f64 = 10.0;

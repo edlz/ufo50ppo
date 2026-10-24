@@ -22,7 +22,7 @@ pub struct NinpekTracker {
     ep_life_gained: u32,
     ep_life_lost: u32,
     ep_stages: u32,
-    ep_survival: f64,
+    ep_progress: f64,
     ep_max_x: f64,
     ep_max_zone: i32,
 }
@@ -39,8 +39,8 @@ impl NinpekTracker {
             ep_life_gained: 0,
             ep_life_lost: 0,
             ep_stages: 0,
-            ep_survival: 0.0,
-            ep_max_x: 0.0,
+            ep_progress: 0.0,
+            ep_max_x: -1.0,
             ep_max_zone: 0,
         }
     }
@@ -125,7 +125,13 @@ impl NinpekTracker {
         if event.is_empty() {
             reward = rewards::SURVIVAL;
         }
-        result(reward, event, false, false)
+        if self.ep_max_x < 0.0 {
+            self.ep_max_x = p.view_x;
+        }
+        let progress = (s.view_x - self.ep_max_x).max(0.0) * rewards::PROGRESS;
+        self.ep_max_x = self.ep_max_x.max(s.view_x);
+        self.ep_progress += progress;
+        result(reward + progress, event, false, false)
     }
 }
 
@@ -139,7 +145,6 @@ impl GameTracker for NinpekTracker {
     fn process_frame(&mut self, frame: &Frame) -> FrameResult {
         let result = self.process_frame_inner(frame.state);
         if frame.state.mas_state == PLAYING {
-            self.ep_max_x = self.ep_max_x.max(frame.state.view_x);
             self.ep_max_zone = self.ep_max_zone.max(frame.state.zone);
         }
         match result.event_name {
@@ -147,7 +152,6 @@ impl GameTracker for NinpekTracker {
             events::LIFE_GAINED => self.ep_life_gained += 1,
             events::LIFE_LOST | events::GAME_OVER => self.ep_life_lost += 1,
             events::STAGE => self.ep_stages += 1,
-            "" if !result.is_menu => self.ep_survival += result.reward,
             _ => {}
         }
         result
@@ -176,8 +180,8 @@ impl GameTracker for NinpekTracker {
 
     fn episode_breakdown(&self) -> String {
         format!(
-            "  furthest x: {:.0} (section {}) | scores: {} | kills: {} | boss dmg: {} | stages: {} | life+: {} | life-: {} | survival: {:.1}",
-            self.ep_max_x,
+            "  furthest x: {:.0} (section {}) | scores: {} | kills: {} | boss dmg: {} | stages: {} | life+: {} | life-: {} | progress: {:.1}",
+            self.ep_max_x.max(0.0),
             self.ep_max_zone,
             self.ep_scores,
             self.ep_kills,
@@ -185,13 +189,13 @@ impl GameTracker for NinpekTracker {
             self.ep_stages,
             self.ep_life_gained,
             self.ep_life_lost,
-            self.ep_survival,
+            self.ep_progress,
         )
     }
 
     fn episode_metrics(&self) -> Vec<(&'static str, f64)> {
         vec![
-            ("furthest_x", self.ep_max_x),
+            ("furthest_x", self.ep_max_x.max(0.0)),
             ("furthest_section", self.ep_max_zone as f64),
             ("kills", self.ep_kills as f64),
             ("boss_damage", self.ep_boss_damage as f64),
