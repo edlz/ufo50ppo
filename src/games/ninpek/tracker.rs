@@ -18,6 +18,7 @@ pub struct NinpekTracker {
     idle_ticks: u32,
     ep_scores: u32,
     ep_kills: u32,
+    ep_boss_damage: u32,
     ep_life_gained: u32,
     ep_life_lost: u32,
     ep_stages: u32,
@@ -34,6 +35,7 @@ impl NinpekTracker {
             idle_ticks: 0,
             ep_scores: 0,
             ep_kills: 0,
+            ep_boss_damage: 0,
             ep_life_gained: 0,
             ep_life_lost: 0,
             ep_stages: 0,
@@ -86,6 +88,11 @@ impl NinpekTracker {
         } else {
             0.0
         };
+        let boss_damage = if p.boss_life >= 0.0 && s.boss_life >= 0.0 {
+            (p.boss_life - s.boss_life).max(0.0)
+        } else {
+            0.0
+        };
 
         let mut reward = 0.0;
         let mut event = "";
@@ -97,6 +104,11 @@ impl NinpekTracker {
             reward += rewards::KILL * kills;
             event = events::KILL;
             self.ep_kills += kills as u32;
+        }
+        if boss_damage > 0.0 {
+            reward += rewards::BOSS_HIT * boss_damage;
+            event = events::BOSS_HIT;
+            self.ep_boss_damage += boss_damage as u32;
         }
         if zone_delta > 0 {
             reward += rewards::STAGE_COMPLETE;
@@ -164,11 +176,12 @@ impl GameTracker for NinpekTracker {
 
     fn episode_breakdown(&self) -> String {
         format!(
-            "  furthest x: {:.0} (section {}) | scores: {} | kills: {} | stages: {} | life+: {} | life-: {} | survival: {:.1}",
+            "  furthest x: {:.0} (section {}) | scores: {} | kills: {} | boss dmg: {} | stages: {} | life+: {} | life-: {} | survival: {:.1}",
             self.ep_max_x,
             self.ep_max_zone,
             self.ep_scores,
             self.ep_kills,
+            self.ep_boss_damage,
             self.ep_stages,
             self.ep_life_gained,
             self.ep_life_lost,
@@ -181,6 +194,7 @@ impl GameTracker for NinpekTracker {
             ("furthest_x", self.ep_max_x),
             ("furthest_section", self.ep_max_zone as f64),
             ("kills", self.ep_kills as f64),
+            ("boss_damage", self.ep_boss_damage as f64),
         ]
     }
 

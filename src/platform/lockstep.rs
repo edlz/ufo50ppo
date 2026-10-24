@@ -47,6 +47,8 @@ pub struct GameState {
     pub view_x: f64,
     /// Ninpek: global.g34_totalKills, enemies killed this run; -1 outside a run.
     pub kills: f64,
+    /// Ninpek: o34_BossEye.life (35 at full health), -1 while the boss doesn't exist.
+    pub boss_life: f64,
 }
 
 pub struct LockstepGame {
@@ -192,6 +194,7 @@ impl LockstepGame {
             demo: f(10) != 0.0,
             view_x: f(11),
             kills: f(12),
+            boss_life: f(13),
         }
     }
 

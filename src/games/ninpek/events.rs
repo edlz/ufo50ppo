@@ -2,6 +2,7 @@
 
 pub const SCORE: &str = "SCORE";
 pub const KILL: &str = "KILL";
+pub const BOSS_HIT: &str = "BOSS HIT";
 pub const LIFE_GAINED: &str = "LIFE+";
 pub const LIFE_LOST: &str = "LIFE-";
 pub const STAGE: &str = "STAGE";
