@@ -5,7 +5,7 @@ pub const KILL: f64 = 1.0;
 /// Per point of damage to the 35 HP boss; the killing blow ends the run as a WIN instead.
 pub const BOSS_HIT: f64 = 1.0;
 pub const LIFE_GAINED: f64 = 1.0;
-pub const LIFE_LOST: f64 = -1.0;
+pub const LIFE_LOST: f64 = -5.0;
 /// Per pixel the camera scrolls past its furthest point this run (~150 over the level).
 pub const PROGRESS: f64 = 0.01;
 /// Entering the next stage section (o34_Mas.iWater advancing).
