@@ -141,12 +141,24 @@ Ninpek (internal game ID 34 — internal IDs don't follow library order) reads `
 | `ufo50ppo` (default, `cargo run --release`) | PPO training entry |
 | `test_lockstep` | Bridge + tracker check with random actions: resets, events, throughput |
 | `record_deaths` | Plays a checkpoint and saves the last 16 frames before each lost life (`runs/ninpek/deaths`) |
+| `record_ghosts` | Replays every saved checkpoint from the level start and logs player positions for `scripts/render_ghosts.py` |
 | `test_model` | Model sanity check (no game needed) |
 | `test_train` | PPO smoke test on a synthetic environment |
+
+## Ghost video
+
+Overlays many games from each saved checkpoint as translucent ninjas, tinted from blue (oldest) to yellow (newest), on the latest checkpoint's longest game. Needs a game copy built from the current bridge (it reports the player's position) and ffmpeg.
+
+```sh
+dotnet <UndertaleModCli.dll> load "$HOME/dev/UFO 50/data.win" -s scripts/export_ninja_sprite.csx < /dev/null  # once
+cargo run --release --bin record_ghosts -- build/game checkpoints/ninpek/<run> 32 3  # games per checkpoint, parallel games
+python3 scripts/render_ghosts.py                    # runs/ninpek/ghosts/ghosts.mp4, all checkpoints at once
+python3 scripts/render_ghosts.py --per-checkpoint   # one segment per checkpoint
+```
 
 ## Adding a New Game
 
 1. Find the game's internal ID and controller object in a decompile of `data.win` (UndertaleModCli `dump -c UMT_DUMP_ALL`). Library slot → ID comes from the order of the `scrNN_Meta(nGame)` calls; `scrNN_Meta` also names the game's room.
-2. Export the state you need from `bridge/patch.csx` (free slots after index 10 of the 16-f64 state block) and add matching fields to `GameState` in `src/platform/lockstep.rs`.
+2. Export the state you need from `bridge/patch.csx` (the 16-f64 state block is full; grow `STATE_LEN` and the surface offset to add slots) and add matching fields to `GameState` in `src/platform/lockstep.rs`.
 3. Create `src/games/yourgame/` with `mod.rs`, `tracker.rs`, `rewards.rs`, `events.rs`. Implement `GameTracker`: `process_frame`, `observe_idle` (actions to reach a fresh run, `None` once playable), `game_name`, `num_actions`; optionally `reset_episode` and `episode_breakdown`.
 4. Expose `pub fn definition() -> GameDefinition` with the game ID, obs dims, action count, tracker factory and hyperparameters, and point `src/main.rs` at it.

@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-const RAW_W: usize = 384;
-const RAW_H: usize = 216;
+pub const RAW_W: usize = 384;
+pub const RAW_H: usize = 216;
 const SCALE: usize = 3;
 pub const OBS_W: usize = RAW_W / SCALE;
 pub const OBS_H: usize = RAW_H / SCALE;
@@ -65,6 +65,10 @@ pub struct GameState {
     pub kills: f64,
     /// Ninpek: o34_BossEye.life (35 at full health), -1 while the boss doesn't exist.
     pub boss_life: f64,
+    /// Ninpek: player position on screen (384x216, sprite origin at its centre), -1 while dead.
+    /// Builds before this field report 0.
+    pub player_x: f64,
+    pub player_y: f64,
 }
 
 pub struct LockstepGame {
@@ -226,6 +230,11 @@ impl LockstepGame {
         &self.obs
     }
 
+    /// The game's native RAW_W x RAW_H BGRA frame.
+    pub fn raw(&self) -> &[u8] {
+        &self.msg[STATE_LEN * 8..]
+    }
+
     fn downscale(&mut self) {
         let raw = &self.msg[STATE_LEN * 8..];
         for oy in 0..OBS_H {
@@ -264,6 +273,8 @@ impl LockstepGame {
             view_x: f(11),
             kills: f(12),
             boss_life: f(13),
+            player_x: f(14),
+            player_y: f(15),
         }
     }
 

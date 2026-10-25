@@ -160,6 +160,10 @@ buffer_poke(_b, 104, buffer_f64, _run ? camera_get_view_x(view_get_camera(0)) : 
 buffer_poke(_b, 112, buffer_f64, (_run && variable_global_exists(""g34_totalKills"")) ? global.g34_totalKills : -1);
 // The level-end eye (35 HP) is Ninpek's only boss.
 buffer_poke(_b, 120, buffer_f64, (_run && instance_exists(o34_BossEye)) ? o34_BossEye.life : -1);
+// Player position on screen; -1 while dead (o34_Player is replaced by an o34_Ghost).
+var _pl = _run && instance_exists(o34_Player);
+buffer_poke(_b, 128, buffer_f64, _pl ? o34_Player.x - camera_get_view_x(view_get_camera(0)) : -1);
+buffer_poke(_b, 136, buffer_f64, _pl ? o34_Player.y - camera_get_view_y(view_get_camera(0)) : -1);
 if (!surface_exists(global.rlSurf))
 {
     global.rlSurf = surface_create(384, 216);
