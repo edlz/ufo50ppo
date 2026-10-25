@@ -337,14 +337,6 @@ impl GameRunner for LockstepGame {
         let start_x = self.next_start_x();
         self.pending_flags = launch_flag(self.game_id, start_x);
     }
-
-    fn obs_width(&self) -> u32 {
-        OBS_W as u32
-    }
-
-    fn obs_height(&self) -> u32 {
-        OBS_H as u32
-    }
 }
 
 impl Drop for LockstepGame {

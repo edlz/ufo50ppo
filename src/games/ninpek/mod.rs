@@ -4,7 +4,7 @@ mod tracker;
 
 pub use tracker::NinpekTracker;
 
-use crate::train::runner::{GameDefinition, Hyperparams};
+use crate::train::config::{GameDefinition, Hyperparams};
 
 /// Internal game ID (o34_*/rm34_*); the library lists Ninpek third.
 pub const GAME_ID: u8 = 34;

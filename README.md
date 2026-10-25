@@ -58,7 +58,6 @@ Throughput: each game copy runs uncapped where it can. On macOS a visible window
 | `--episodes` | `-e` | Max episodes before stopping |
 | `--frames` | `-f` | Max training steps before stopping |
 | `--minutes` | `-m` | Max training time in minutes |
-| `--auto-resume` | `-r` | Accepted for compatibility; dead-env detection takes the place of reload-and-retry |
 | `--debug` | `-d` | Print per-episode reward breakdown |
 
 Press **Ctrl+C** at any time to save a final checkpoint, close the game copies and exit cleanly.
@@ -102,7 +101,7 @@ Input goes through the game's own `scrGetInput`, not the OS keyboard, because Ga
 
 Per-game `GameTracker` impls turn each `Frame` (pixels + `GameState` from inside the game) into `FrameResult { reward, done, event_name, is_menu, ... }`. The trainer adds **reward normalization** (`RunningMeanStd`, Welford) on top: each reward is divided by the running std of the discounted return before GAE, stabilizing training across reward distribution shifts. The normalizer state persists across resumes via `latest.json`.
 
-After a reset the trainer calls `observe_idle` each frame; it returns the action to send (e.g. to get through the title screen) until a fresh run is playable. `is_menu` marks frames that are skipped from the PPO rollout.
+After a reset the trainer calls `observe_idle` each frame; it returns the action to send (e.g. to get through the title screen) until a fresh run is playable. `is_menu` marks frames that are skipped from the PPO rollout; `menu_action` picks the button to send on them (Ninpek uses it to confirm the win screen and start the second loop).
 
 Ninpek (internal game ID 34 — internal IDs don't follow library order) reads `o34_Mas`: `points[0]`, `life[0]` (-1 = game over), `state` (20 playing, 50 game over, 60–70 intro, 80+ win), and `iWater` (stage section) for the stage reward.
 
@@ -110,10 +109,10 @@ Ninpek (internal game ID 34 — internal IDs don't follow library order) reads `
 
 | Metric | Description |
 |--------|-------------|
-| `rollout/ep_rew_mean` | Episode reward (aggregate across envs in multi-env) |
+| `rollout/ep_rew_mean` | Episode reward (aggregate across envs) |
 | `rollout/ep_len_mean` | Episode length (frames) |
-| `rollout/ep_rew_min` / `ep_rew_max` | Per-tick spread across envs (multi-env only) |
-| `rollout/env_{i}/ep_rew_mean` | Per-env episode reward (multi-env only) |
+| `rollout/ep_rew_min` / `ep_rew_max` | Spread of the latest episode reward across envs |
+| `rollout/env_{i}/ep_rew_mean` | Per-env episode reward |
 | `train/policy_loss` | PPO clipped surrogate loss |
 | `train/value_loss` | Clipped value function MSE |
 | `train/entropy` | Policy entropy |
@@ -131,7 +130,7 @@ Ninpek (internal game ID 34 — internal IDs don't follow library order) reads `
 - **NaN guards** — PPO update skips minibatches with non-finite loss or gradient instead of propagating to the optimizer.
 - **GPU detection warning** — startup prints a loud warning when neither CUDA nor MPS is available.
 - **Ctrl+C graceful shutdown** — a signal handler (Ctrl+C / SIGTERM) flips a static flag; trainer saves a final checkpoint, quits the game copies and exits.
-- **Save-failure escalation** — `save_checkpoint` tracks consecutive failures across the process; after 3 in a row it triggers shutdown so unattended runs don't silently lose hours of work.
+- **Save-failure escalation** — `checkpoint::save` (`src/util/checkpoint.rs`) tracks consecutive failures across the process; after 3 in a row it triggers shutdown so unattended runs don't silently lose hours of work.
 - **Run metadata** — every trainer startup appends a JSON line to `run_metadata.jsonl` with git hash, dirty flag, hyperparam snapshot, and start time.
 
 ## Binaries
@@ -160,5 +159,5 @@ python3 scripts/render_ghosts.py --per-checkpoint   # one segment per checkpoint
 
 1. Find the game's internal ID and controller object in a decompile of `data.win` (UndertaleModCli `dump -c UMT_DUMP_ALL`). Library slot → ID comes from the order of the `scrNN_Meta(nGame)` calls; `scrNN_Meta` also names the game's room.
 2. Export the state you need from `bridge/patch.csx` (each slot is one f64; adding one means bumping `STATE_LEN` and the buffer size and frame offset in `patch.csx`) and add matching fields to `GameState` in `src/platform/lockstep.rs`.
-3. Create `src/games/yourgame/` with `mod.rs`, `tracker.rs`, `rewards.rs`, `events.rs`. Implement `GameTracker`: `process_frame`, `observe_idle` (actions to reach a fresh run, `None` once playable), `game_name`, `num_actions`; optionally `reset_episode` and `episode_breakdown`.
+3. Create `src/games/yourgame/` with `mod.rs`, `tracker.rs`, `rewards.rs`, `events.rs`. Implement `GameTracker`: `process_frame`, `observe_idle` (actions to reach a fresh run, `None` once playable), `game_name`, `num_actions`; optionally `menu_action`, `reset_episode`, `episode_breakdown` and `episode_metrics`.
 4. Expose `pub fn definition() -> GameDefinition` with the game ID, obs dims, action count, tracker factory and hyperparameters, and point `src/main.rs` at it.

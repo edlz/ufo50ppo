@@ -1,6 +1,7 @@
 pub mod ninpek;
 
-use crate::platform::Frame;
+use crate::platform::{Frame, GameRunner};
+use std::time::Duration;
 
 pub struct FrameResult {
     pub reward: f64,
@@ -37,5 +38,26 @@ pub trait GameTracker: Send {
     /// Per-episode scalars logged to TensorBoard under `game/<name>`.
     fn episode_metrics(&self) -> Vec<(&'static str, f64)> {
         Vec::new()
+    }
+}
+
+/// Relaunches the game and plays `tracker`'s idle actions until a fresh run starts. The next
+/// frame is the run's first for `process_frame`.
+pub fn start_run(
+    runner: &mut dyn GameRunner,
+    tracker: &mut dyn GameTracker,
+    timeout: Duration,
+) -> Result<(), String> {
+    runner.reset_game();
+    tracker.reset_episode();
+    loop {
+        let frame = runner.next_frame_timeout(timeout)?;
+        match tracker.observe_idle(&frame) {
+            Some(action) => runner.execute_action(action),
+            None => {
+                runner.execute_action(0);
+                return Ok(());
+            }
+        }
     }
 }

@@ -3,7 +3,6 @@ pub struct TrainArgs {
     pub max_episodes: Option<u32>,
     pub max_frames: Option<u64>,
     pub max_minutes: Option<u64>,
-    pub auto_resume: bool,
     pub debug: bool,
     pub num_envs: u32,
     /// Lockstep game copy built by bridge/build.sh.
@@ -34,7 +33,6 @@ pub fn parse_train_args(default_namespace: &str) -> TrainArgs {
     let mut max_episodes = None;
     let mut max_frames = None;
     let mut max_minutes = None;
-    let mut auto_resume = false;
     let mut debug = false;
     let mut num_envs: u32 = 1;
     let mut game_dir = std::env::var_os("UFO50_GAME_DIR")
@@ -70,7 +68,6 @@ pub fn parse_train_args(default_namespace: &str) -> TrainArgs {
                     "--minutes",
                 ));
             }
-            "--auto-resume" | "-r" => auto_resume = true,
             "--debug" | "-d" => debug = true,
             "--num-envs" | "-N" => {
                 i += 1;
@@ -113,7 +110,6 @@ pub fn parse_train_args(default_namespace: &str) -> TrainArgs {
         max_episodes,
         max_frames,
         max_minutes,
-        auto_resume,
         debug,
         num_envs,
         game_dir,

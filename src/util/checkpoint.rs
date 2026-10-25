@@ -1,58 +1,49 @@
-use std::io::{Read, Write};
+use crate::train::adam::Adam;
+use crate::train::config::Hyperparams;
+use std::io::Write;
+use std::sync::atomic::{AtomicU32, Ordering};
 use tch::nn::VarStore;
 
-/// Write a single-shot run snapshot (git hash, hyperparams, num_envs, start time) to
-/// `{dir}/run_metadata.json`. Called once per training process at startup. The file is
-/// append-only across runs — if it already exists, we append a new JSON object so a
-/// directory shared by multiple resume attempts captures the full history.
-pub fn write_run_metadata(
-    dir: &str,
-    game: &str,
-    num_envs: u32,
-    rollout_len: usize,
-    learning_rate: f64,
-    gamma: f64,
-    gae_lambda: f64,
-) {
+/// Appends this process's git hash and hyperparameters to `{dir}/run_metadata.jsonl`.
+pub fn write_run_metadata(dir: &str, game: &str, num_envs: usize, hp: &Hyperparams) {
     let _ = std::fs::create_dir_all(dir);
     let path = format!("{}/run_metadata.jsonl", dir);
 
-    let git_hash = std::process::Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "unknown".into());
-
-    let git_dirty = std::process::Command::new("git")
-        .args(["status", "--porcelain"])
-        .output()
-        .ok()
-        .map(|o| !o.stdout.is_empty())
-        .unwrap_or(false);
-
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    };
+    let git_hash = git(&["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".into());
+    let git_dirty = git(&["status", "--porcelain"]).is_some_and(|s| !s.is_empty());
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
     let line = format!(
-        "{{\"start_unix\":{},\"game\":\"{}\",\"git_hash\":\"{}\",\"git_dirty\":{},\"num_envs\":{},\"rollout_len\":{},\"learning_rate\":{},\"gamma\":{},\"gae_lambda\":{}}}\n",
-        now, game, git_hash, git_dirty, num_envs, rollout_len, learning_rate, gamma, gae_lambda
+        "{{\"start_unix\":{},\"game\":\"{}\",\"git_hash\":\"{}\",\"git_dirty\":{},\"num_envs\":{},\"rollout_len\":{},\"learning_rate\":{},\"lr_anneal_frames\":{},\"lr_final_frac\":{},\"gamma\":{},\"gae_lambda\":{}}}\n",
+        now,
+        game,
+        git_hash,
+        git_dirty,
+        num_envs,
+        hp.rollout_len,
+        hp.learning_rate,
+        hp.lr_anneal_frames,
+        hp.lr_final_frac,
+        hp.gamma,
+        hp.gae_lambda
     );
-
-    match std::fs::OpenOptions::new()
+    let written = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)
-    {
-        Ok(mut f) => {
-            if let Err(e) = f.write_all(line.as_bytes()) {
-                eprintln!("write_run_metadata: {}", e);
-            }
-        }
-        Err(e) => eprintln!("write_run_metadata: open {}: {}", path, e),
+        .and_then(|mut f| f.write_all(line.as_bytes()));
+    if let Err(e) = written {
+        eprintln!("write_run_metadata: {}: {}", path, e);
     }
 }
 
@@ -64,6 +55,7 @@ pub struct CheckpointMeta {
     pub ppo_updates: u64,
     pub best_reward: f64,
     pub rollout_len: usize,
+    /// The learning rate in effect at the save (it anneals).
     pub learning_rate: f64,
     pub gamma: f64,
     pub gae_lambda: f64,
@@ -74,7 +66,66 @@ pub struct CheckpointMeta {
     pub reward_norm_count: u64,
 }
 
-pub fn save_metadata(dir: &str, name: &str, meta: &CheckpointMeta) {
+/// Consecutive failed saves; after MAX_CONSECUTIVE_SAVE_FAILURES the trainer shuts down so an
+/// unattended run doesn't silently lose hours of work.
+static CONSECUTIVE_SAVE_FAILURES: AtomicU32 = AtomicU32::new(0);
+const MAX_CONSECUTIVE_SAVE_FAILURES: u32 = 3;
+
+fn record_save_failure(context: &str) {
+    let n = CONSECUTIVE_SAVE_FAILURES.fetch_add(1, Ordering::Relaxed) + 1;
+    eprintln!(
+        "checkpoint save: failure #{} ({}). Threshold = {}.",
+        n, context, MAX_CONSECUTIVE_SAVE_FAILURES
+    );
+    if n >= MAX_CONSECUTIVE_SAVE_FAILURES {
+        eprintln!(
+            "checkpoint save: {} consecutive failures — triggering shutdown",
+            n
+        );
+        crate::util::shutdown::trigger();
+    }
+}
+
+/// Writes `{dir}/{name}.{safetensors,adam,json}` via tmp files and renames, weights first, so a
+/// crash mid-save never leaves metadata ahead of the weights.
+pub fn save(dir: &str, name: &str, vs: &VarStore, opt: &Adam, meta: &CheckpointMeta) {
+    let path = format!("{}/{}.safetensors", dir, name);
+    // tch picks the format from the extension, so the tmp file must still end in .safetensors.
+    let tmp = format!("{}/{}.tmp.safetensors", dir, name);
+    if let Err(e) = vs.save(&tmp) {
+        eprintln!("checkpoint save: write {} failed: {}", tmp, e);
+        let _ = std::fs::remove_file(&tmp);
+        record_save_failure("safetensors write");
+        return;
+    }
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        eprintln!("checkpoint save: rename {} -> {} failed: {}", tmp, path, e);
+        let _ = std::fs::remove_file(&tmp);
+        record_save_failure("safetensors rename");
+        return;
+    }
+
+    let adam_path = format!("{}/{}.adam", dir, name);
+    let adam_tmp = format!("{}.tmp", adam_path);
+    let adam = opt
+        .save_state(&adam_tmp)
+        .map_err(|e| e.to_string())
+        .and_then(|()| std::fs::rename(&adam_tmp, &adam_path).map_err(|e| e.to_string()));
+    if let Err(e) = &adam {
+        eprintln!("checkpoint save: adam: {}", e);
+        let _ = std::fs::remove_file(&adam_tmp);
+    }
+
+    save_metadata(dir, name, meta);
+
+    if adam.is_ok() {
+        CONSECUTIVE_SAVE_FAILURES.store(0, Ordering::Relaxed);
+    } else {
+        record_save_failure("adam save");
+    }
+}
+
+fn save_metadata(dir: &str, name: &str, meta: &CheckpointMeta) {
     let path = format!("{}/{}.json", dir, name);
     let tmp = format!("{}.tmp", path);
     let Ok(mut f) = std::fs::File::create(&tmp) else {
@@ -127,6 +178,21 @@ pub fn save_metadata(dir: &str, name: &str, meta: &CheckpointMeta) {
     }
 }
 
+/// Removes `.tmp` files a previous run left behind by dying mid-save.
+pub fn cleanup_stale_tmp(dir: &str) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        let is_tmp = name.ends_with(".tmp") || name.ends_with(".tmp.safetensors");
+        if is_tmp && let Err(e) = std::fs::remove_file(&path) {
+            eprintln!("cleanup_stale_tmp: failed to remove {:?}: {}", path, e);
+        }
+    }
+}
+
 /// State loaded from a previous checkpoint to resume training.
 pub struct ResumedState {
     pub episode: u32,
@@ -162,55 +228,22 @@ pub fn try_load(dir: &str, name: &str, vs: &mut VarStore) -> Result<Option<Resum
     Ok(Some(state))
 }
 
-/// Try to load metadata from a checkpoint JSON file.
-/// Returns None if file doesn't exist or can't be parsed.
+/// Reads the metadata `save` wrote; None if the file is missing or a required field is unparseable.
 pub fn load_metadata(dir: &str, name: &str) -> Option<ResumedState> {
-    let path = format!("{}/{}.json", dir, name);
-    let mut contents = String::new();
-    std::fs::File::open(&path)
-        .ok()?
-        .read_to_string(&mut contents)
-        .ok()?;
-
-    // Simple JSON parsing without serde — extract numeric fields
-    fn extract_u32(s: &str, key: &str) -> Option<u32> {
+    let contents = std::fs::read_to_string(format!("{}/{}.json", dir, name)).ok()?;
+    // The writer above puts one field per line, so this needs no JSON parser.
+    fn field<T: std::str::FromStr>(s: &str, key: &str) -> Option<T> {
         let pat = format!("\"{}\":", key);
-        let idx = s.find(&pat)? + pat.len();
-        s[idx..]
-            .trim()
-            .split(|c: char| !c.is_ascii_digit())
-            .next()?
-            .parse()
-            .ok()
+        let rest = &s[s.find(&pat)? + pat.len()..];
+        rest.split([',', '\n', '}']).next()?.trim().parse().ok()
     }
-    fn extract_u64(s: &str, key: &str) -> Option<u64> {
-        let pat = format!("\"{}\":", key);
-        let idx = s.find(&pat)? + pat.len();
-        s[idx..]
-            .trim()
-            .split(|c: char| !c.is_ascii_digit())
-            .next()?
-            .parse()
-            .ok()
-    }
-    fn extract_f64(s: &str, key: &str) -> Option<f64> {
-        let pat = format!("\"{}\":", key);
-        let idx = s.find(&pat)? + pat.len();
-        s[idx..]
-            .trim()
-            .split(|c: char| !c.is_ascii_digit() && c != '.' && c != '-')
-            .next()?
-            .parse()
-            .ok()
-    }
-
     Some(ResumedState {
-        episode: extract_u32(&contents, "episode")?,
-        total_frames: extract_u64(&contents, "total_frames")?,
-        ppo_updates: extract_u64(&contents, "ppo_updates")?,
-        best_reward: extract_f64(&contents, "best_reward").unwrap_or(f64::NEG_INFINITY),
-        reward_norm_mean: extract_f64(&contents, "reward_norm_mean").unwrap_or(0.0),
-        reward_norm_var_sum: extract_f64(&contents, "reward_norm_var_sum").unwrap_or(0.0),
-        reward_norm_count: extract_u64(&contents, "reward_norm_count").unwrap_or(0),
+        episode: field(&contents, "episode")?,
+        total_frames: field(&contents, "total_frames")?,
+        ppo_updates: field(&contents, "ppo_updates")?,
+        best_reward: field(&contents, "best_reward").unwrap_or(f64::NEG_INFINITY),
+        reward_norm_mean: field(&contents, "reward_norm_mean").unwrap_or(0.0),
+        reward_norm_var_sum: field(&contents, "reward_norm_var_sum").unwrap_or(0.0),
+        reward_norm_count: field(&contents, "reward_norm_count").unwrap_or(0),
     })
 }

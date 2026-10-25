@@ -1,22 +1,16 @@
 use ufo50ppo::games;
 use ufo50ppo::platform::GameRunner;
 use ufo50ppo::platform::lockstep::{LockstepGame, Start};
+use ufo50ppo::train::config::TrainingConfig;
 use ufo50ppo::train::multi::run_training_multi;
-use ufo50ppo::train::runner::TrainingConfig;
 use ufo50ppo::util::cli;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = cli::parse_train_args("default");
-    let mut game = games::ninpek::definition();
+    let game = games::ninpek::definition();
 
     ufo50ppo::util::preload_torch_cuda();
     ufo50ppo::util::shutdown::install()?;
-
-    let num_envs = args.num_envs;
-
-    if num_envs > 1 {
-        game.hyperparams.rollout_len = 256;
-    }
 
     println!(
         "Training {} | ns: {} | {}x{} | envs: {} | frame skip: {} | random start: {} | game: {}",
@@ -24,7 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.namespace,
         game.obs_width,
         game.obs_height,
-        num_envs,
+        args.num_envs,
         args.frame_skip,
         args.random_start,
         args.game_dir.display()
@@ -35,7 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut games = LockstepGame::launch_many(
         &args.game_dir,
-        num_envs as usize,
+        args.num_envs as usize,
         args.frame_skip,
         game.game_id,
     )
@@ -56,7 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|g| Box::new(g) as Box<dyn GameRunner>)
         .collect();
 
-    let cfg = TrainingConfig::from_args(args, game.name);
+    let cfg = TrainingConfig::from_args(&args, game.name);
     run_training_multi(runners, game, cfg);
     Ok(())
 }

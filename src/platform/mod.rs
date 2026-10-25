@@ -17,10 +17,6 @@ pub trait GameRunner: Send {
 
     /// Relaunches the game; takes effect with the next `execute_action`.
     fn reset_game(&mut self);
-
-    fn obs_width(&self) -> u32;
-
-    fn obs_height(&self) -> u32;
 }
 
 pub const VK_UP: u8 = 0x26;

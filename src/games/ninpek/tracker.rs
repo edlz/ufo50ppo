@@ -11,7 +11,7 @@ const WIN_SCREEN: i32 = 84; // waits for fire2; on the first loop that starts th
 const NINPEK_ID: i32 = 34;
 /// Right edge of the camera at the end of the room; the second loop is laid after the first.
 const LOOP_W: f64 = 14976.0 + 384.0;
-/// Steps the win sequence and loop restart take is ~150; past this, give up on the run.
+/// The win sequence and loop restart take ~150 steps; past this, give up on the run.
 const MAX_LOOPING_STEPS: u32 = 1000;
 
 const ACTION_UP: usize = 1;

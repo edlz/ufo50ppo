@@ -25,25 +25,18 @@ impl FrameStack {
         }
     }
 
-    pub fn push(&mut self, bgra: &[u8], width: u32, height: u32) -> Tensor {
-        let n = width as usize * height as usize;
+    /// `bgra`: one frame at the stack's size.
+    pub fn push(&mut self, bgra: &[u8]) -> Tensor {
+        let n = (self.width * self.height) as usize;
         let mut planar = vec![0u8; n * 3];
         for (i, px) in bgra.chunks_exact(4).take(n).enumerate() {
             planar[i] = px[2];
             planar[n + i] = px[1];
             planar[2 * n + i] = px[0];
         }
-
-        let mut frame = Tensor::from_slice(&planar)
-            .reshape([1, COLORS, height as i64, width as i64])
+        let frame = Tensor::from_slice(&planar)
+            .reshape([1, COLORS, self.height, self.width])
             .to_device(self.buffer.device());
-        if height as i64 != self.height || width as i64 != self.width {
-            frame = frame
-                .to_kind(Kind::Float)
-                .upsample_bilinear2d([self.height, self.width], false, None, None)
-                .round()
-                .to_kind(Kind::Uint8);
-        }
 
         if self.count == 0 {
             for i in 0..STACK_SIZE {

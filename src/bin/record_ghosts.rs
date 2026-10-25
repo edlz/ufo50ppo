@@ -1,8 +1,5 @@
-// Replays every saved checkpoint from the level start and logs the player's position each step,
-// for runs/ninpek/render_ghosts.py to overlay as one crowd of ninjas per checkpoint. Also keeps
-// the native frames of the latest checkpoint's longest game as the video background.
-// Needs a game built with player position in the state (bridge/patch.csx). Doesn't touch a
-// running trainer.
+// Replays every saved checkpoint from the level start, logging player positions for
+// scripts/render_ghosts.py; the latest checkpoint's longest game becomes the background.
 // Usage: cargo run --release --bin record_ghosts -- <game dir> <checkpoint dir> [games per checkpoint] [parallel games] [out dir]
 
 use std::fs::File;
@@ -10,8 +7,8 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
-use ufo50ppo::games::GameTracker;
 use ufo50ppo::games::ninpek::{GAME_ID, NinpekTracker};
+use ufo50ppo::games::{GameTracker, start_run};
 use ufo50ppo::platform::lockstep::{LockstepGame, OBS_H, OBS_W, RAW_H, RAW_W};
 use ufo50ppo::platform::{GameRunner, NUM_ACTIONS};
 use ufo50ppo::train::model::ActorCritic;
@@ -19,6 +16,7 @@ use ufo50ppo::train::preprocess::FrameStack;
 use ufo50ppo::util::checkpoint;
 
 const MAX_STEPS: usize = 5000;
+const TIMEOUT: Duration = Duration::from_secs(10);
 const LATEST: &str = "latest";
 
 /// (view_x, player_x, player_y) per step.
@@ -59,16 +57,9 @@ fn play(
     let mut stack = FrameStack::new(tch::Device::Cpu, OBS_W as u32, OBS_H as u32);
     let mut path = Vec::new();
     let mut rgb = Vec::with_capacity(RAW_W * RAW_H * 3);
-    game.reset_game();
-    loop {
-        let frame = game.next_frame_timeout(Duration::from_secs(10))?;
-        match tracker.observe_idle(&frame) {
-            Some(a) => game.execute_action(a),
-            None => break,
-        }
-    }
-    let mut frame = game.next_frame_timeout(Duration::from_secs(10))?;
+    start_run(game, &mut tracker, TIMEOUT)?;
     while path.len() < MAX_STEPS {
+        let frame = game.next_frame_timeout(TIMEOUT)?;
         let r = tracker.process_frame(&frame);
         let s = frame.state;
         path.push((s.view_x, s.player_x, s.player_y));
@@ -79,9 +70,12 @@ fn play(
         if r.done {
             break;
         }
-        let obs = stack.push(&frame.pixels, OBS_W as u32, OBS_H as u32);
-        game.execute_action(model.act(&obs).0 as usize);
-        frame = game.next_frame_timeout(Duration::from_secs(10))?;
+        let action = if r.is_menu {
+            tracker.menu_action()
+        } else {
+            model.act(&stack.push(&frame.pixels)).0 as usize
+        };
+        game.execute_action(action);
     }
     game.execute_action(0);
     Ok(path)

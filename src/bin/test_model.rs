@@ -28,7 +28,7 @@ fn main() {
 
     let mut fs = train::preprocess::FrameStack::new(device, 128, 128);
     let fake_bgra = vec![128u8; 128 * 128 * 4];
-    let stacked = fs.push(&fake_bgra, 128, 128);
+    let stacked = fs.push(&fake_bgra);
     println!("Frame stack output: {:?}", stacked.size());
 
     let (action2, _, _) = model.act(&stacked);

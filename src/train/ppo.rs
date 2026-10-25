@@ -10,7 +10,6 @@ pub struct RolloutBuffer {
     pub rewards: Vec<f64>,
     pub values: Vec<f64>,
     pub dones: Vec<bool>,
-    capacity: usize,
 }
 
 impl RolloutBuffer {
@@ -22,7 +21,6 @@ impl RolloutBuffer {
             rewards: Vec::with_capacity(capacity),
             values: Vec::with_capacity(capacity),
             dones: Vec::with_capacity(capacity),
-            capacity,
         }
     }
 

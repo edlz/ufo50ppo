@@ -6,8 +6,8 @@ use std::collections::VecDeque;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use ufo50ppo::games::GameTracker;
 use ufo50ppo::games::ninpek::{GAME_ID, NinpekTracker, events};
+use ufo50ppo::games::{GameTracker, start_run};
 use ufo50ppo::platform::lockstep::{LockstepGame, OBS_H, OBS_W};
 use ufo50ppo::platform::{ACTION_NAMES, GameRunner, GameState, NUM_ACTIONS};
 use ufo50ppo::train::model::ActorCritic;
@@ -17,6 +17,7 @@ use ufo50ppo::util::checkpoint;
 const HISTORY: usize = 16;
 const COLS: usize = 4;
 const SCALE: usize = 3;
+const TIMEOUT: Duration = Duration::from_secs(10);
 
 struct Step {
     pixels: Vec<u8>,
@@ -70,27 +71,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut stack = FrameStack::new(device, OBS_W as u32, OBS_H as u32);
     let mut history: VecDeque<Step> = VecDeque::with_capacity(HISTORY);
     let mut summary = std::fs::File::create(out_dir.join("summary.txt"))?;
-    let mut draining = true;
-    let (mut recorded, mut episode, mut step) = (0, 1, 0u32);
-    game.reset_game();
+    let (mut recorded, mut episode, mut step) = (0, 0, 0u32);
 
     while recorded < deaths {
-        let frame = game.next_frame_timeout(Duration::from_secs(10))?;
-        if draining {
-            match tracker.observe_idle(&frame) {
-                Some(a) => game.execute_action(a),
-                None => {
-                    draining = false;
-                    game.execute_action(0);
-                }
-            }
-            continue;
+        if step == 0 {
+            start_run(&mut game, &mut tracker, TIMEOUT)?;
+            stack.reset();
+            history.clear();
+            episode += 1;
         }
-
+        let frame = game.next_frame_timeout(TIMEOUT)?;
         let r = tracker.process_frame(&frame);
         step += 1;
-        let obs = stack.push(&frame.pixels, OBS_W as u32, OBS_H as u32);
-        let action = model.act(&obs).0 as usize;
+        let action = if r.is_menu {
+            tracker.menu_action()
+        } else {
+            model.act(&stack.push(&frame.pixels)).0 as usize
+        };
         if history.len() == HISTORY {
             history.pop_front();
         }
@@ -121,12 +118,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if r.done {
             game.execute_action(0);
-            game.reset_game();
-            tracker.reset_episode();
-            stack.reset();
-            history.clear();
-            draining = true;
-            episode += 1;
             step = 0;
         } else {
             game.execute_action(action);
