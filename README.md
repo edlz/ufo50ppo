@@ -159,6 +159,6 @@ python3 scripts/render_ghosts.py --per-checkpoint   # one segment per checkpoint
 ## Adding a New Game
 
 1. Find the game's internal ID and controller object in a decompile of `data.win` (UndertaleModCli `dump -c UMT_DUMP_ALL`). Library slot → ID comes from the order of the `scrNN_Meta(nGame)` calls; `scrNN_Meta` also names the game's room.
-2. Export the state you need from `bridge/patch.csx` (the 16-f64 state block is full; grow `STATE_LEN` and the surface offset to add slots) and add matching fields to `GameState` in `src/platform/lockstep.rs`.
+2. Export the state you need from `bridge/patch.csx` (each slot is one f64; adding one means bumping `STATE_LEN` and the buffer size and frame offset in `patch.csx`) and add matching fields to `GameState` in `src/platform/lockstep.rs`.
 3. Create `src/games/yourgame/` with `mod.rs`, `tracker.rs`, `rewards.rs`, `events.rs`. Implement `GameTracker`: `process_frame`, `observe_idle` (actions to reach a fresh run, `None` once playable), `game_name`, `num_actions`; optionally `reset_episode` and `episode_breakdown`.
 4. Expose `pub fn definition() -> GameDefinition` with the game ID, obs dims, action count, tracker factory and hyperparameters, and point `src/main.rs` at it.

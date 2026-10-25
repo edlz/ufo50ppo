@@ -3,10 +3,11 @@
 //   [0, 8)     keys to hold (VK codes, 0 = empty), written by the trainer
 //   [8, 12)    u32 frames to run before the next sync (min 1)
 //   [12, 16)   u32 flags: 1 = quit, 2 = launch game (id in bits 8..15, Ninpek start camera x / 16 in bits 16..31)
-//   [16, 144)  16 x f64 game state: frame, room, game id, paused, then Ninpek's
+//   [16, 152)  17 x f64 game state: frame, room, game id, paused, then Ninpek's
 //              o34_Mas points[0], life[0], state, iWater, then title menuSel,
-//              numPlayers, demo playback, camera x, run kill count, boss HP (see GameState in lockstep.rs)
-//   [144, ..)  384x216 BGRA frame (native resolution; the trainer downscales it)
+//              numPlayers, demo playback, camera x, run kill count, boss HP, player
+//              screen x/y, loop (see GameState in lockstep.rs)
+//   [152, ..)  384x216 BGRA frame (native resolution; the trainer downscales it)
 using UndertaleModLib.Compiler;
 using UndertaleModLib.Models;
 
@@ -43,7 +44,7 @@ g.QueueAppend("gml_Object_oController_Create_0", @"
 global.rlOn = rl_init();
 if (global.rlOn)
 {
-    global.rlBuf = buffer_create(331920, buffer_fixed, 1);
+    global.rlBuf = buffer_create(331928, buffer_fixed, 1);
     global.rlSurf = -1;
     global.rlKeys = array_create(8, 0);
     global.rlPrevKeys = array_create(8, 0);
@@ -164,6 +165,8 @@ buffer_poke(_b, 120, buffer_f64, (_run && instance_exists(o34_BossEye)) ? o34_Bo
 var _pl = _run && instance_exists(o34_Player);
 buffer_poke(_b, 128, buffer_f64, _pl ? o34_Player.x - camera_get_view_x(view_get_camera(0)) : -1);
 buffer_poke(_b, 136, buffer_f64, _pl ? o34_Player.y - camera_get_view_y(view_get_camera(0)) : -1);
+// 1 on the harder second loop that follows the first boss kill.
+buffer_poke(_b, 144, buffer_f64, variable_global_exists(""g34_loop"") ? global.g34_loop : 0);
 if (!surface_exists(global.rlSurf))
 {
     global.rlSurf = surface_create(384, 216);
@@ -175,8 +178,8 @@ draw_clear(c_black);
 draw_surface_stretched(application_surface, 0, 0, 384, 216);
 surface_reset_target();
 gpu_set_texfilter(_filter);
-buffer_get_surface(_b, global.rlSurf, 144);
-if (!rl_step(buffer_get_address(_b), 331920))
+buffer_get_surface(_b, global.rlSurf, 152);
+if (!rl_step(buffer_get_address(_b), 331928))
 {
     game_end();
     exit;

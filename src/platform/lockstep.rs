@@ -14,7 +14,7 @@ pub const RAW_H: usize = 216;
 const SCALE: usize = 3;
 pub const OBS_W: usize = RAW_W / SCALE;
 pub const OBS_H: usize = RAW_H / SCALE;
-const STATE_LEN: usize = 16;
+const STATE_LEN: usize = 17;
 const MSG_LEN: usize = STATE_LEN * 8 + RAW_W * RAW_H * 4;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(90);
 
@@ -66,9 +66,10 @@ pub struct GameState {
     /// Ninpek: o34_BossEye.life (35 at full health), -1 while the boss doesn't exist.
     pub boss_life: f64,
     /// Ninpek: player position on screen (384x216, sprite origin at its centre), -1 while dead.
-    /// Builds before this field report 0.
     pub player_x: f64,
     pub player_y: f64,
+    /// Ninpek: global.g34_loop, 0 the first time through, 1 on the harder second loop.
+    pub game_loop: i32,
 }
 
 pub struct LockstepGame {
@@ -275,6 +276,7 @@ impl LockstepGame {
             boss_life: f(13),
             player_x: f(14),
             player_y: f(15),
+            game_loop: f(16) as i32,
         }
     }
 

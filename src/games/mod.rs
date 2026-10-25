@@ -18,6 +18,12 @@ pub trait GameTracker: Send {
     /// otherwise the action to send this frame (e.g. to get past a title screen).
     fn observe_idle(&mut self, frame: &Frame) -> Option<usize>;
 
+    /// The action to send on a frame `process_frame` marked `is_menu` (e.g. to confirm a screen
+    /// that waits for a button mid-run).
+    fn menu_action(&mut self) -> usize {
+        0
+    }
+
     fn reset_episode(&mut self) {}
 
     fn game_name(&self) -> &str;

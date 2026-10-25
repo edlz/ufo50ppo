@@ -299,7 +299,7 @@ pub fn run_training_multi(
                     reward_norm.update(return_acc[i]);
 
                     if result.is_menu {
-                        runners[i].execute_action(0);
+                        runners[i].execute_action(trackers[i].menu_action());
                         // Propagate event reward across menu transitions, same as single-env runner
                         if result.is_event || result.done {
                             if let Some(p) = prev[i].take() {
