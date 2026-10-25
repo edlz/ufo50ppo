@@ -100,8 +100,13 @@ fn worker(
     let tmp = shared.out_dir.join(format!("bg_{id}.tmp"));
     for name in names {
         let mut model = ActorCritic::new(tch::Device::Cpu, OBS_W as u32, OBS_H as u32, NUM_ACTIONS);
-        let ckpt = checkpoint::try_load(ckpt_dir, name, &mut model.vs)?
-            .ok_or_else(|| format!("no checkpoint {name} in {ckpt_dir}"))?;
+        let dir = if name == LATEST {
+            shared.out_dir.to_str().ok_or("non-UTF-8 out dir")?
+        } else {
+            ckpt_dir
+        };
+        let ckpt = checkpoint::try_load(dir, name, &mut model.vs)?
+            .ok_or_else(|| format!("no checkpoint {name} in {dir}"))?;
         for run in (id..runs).step_by(workers) {
             let mut bg = if name == LATEST {
                 Some(BufWriter::new(
@@ -156,6 +161,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Each game's model is tiny; one thread apiece leaves the cores to a running trainer.
     tch::set_num_threads(1);
     let names = checkpoints(&ckpt_dir)?;
+    // A running trainer rewrites `latest`; every game copy must play the same one.
+    for ext in ["safetensors", "json"] {
+        std::fs::copy(
+            format!("{ckpt_dir}/{LATEST}.{ext}"),
+            out_dir.join(format!("{LATEST}.{ext}")),
+        )?;
+    }
     println!(
         "{} checkpoints x {runs} games on {workers} game copies",
         names.len()
