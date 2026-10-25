@@ -10,6 +10,8 @@ pub struct TrainArgs {
     pub game_dir: std::path::PathBuf,
     /// Game frames per training step (action repeat).
     pub frame_skip: u32,
+    /// Fraction of runs that start at a random point in the level instead of the beginning.
+    pub random_start: f64,
 }
 
 fn parse_or_die<T: std::str::FromStr>(val: &str, flag: &str) -> T {
@@ -39,6 +41,7 @@ pub fn parse_train_args(default_namespace: &str) -> TrainArgs {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| "build/game".into());
     let mut frame_skip: u32 = 4;
+    let mut random_start = 0.5;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -89,6 +92,15 @@ pub fn parse_train_args(default_namespace: &str) -> TrainArgs {
                     std::process::exit(2);
                 }
             }
+            "--random-start" | "-s" => {
+                i += 1;
+                random_start =
+                    parse_or_die(require_value(&args, i, "--random-start"), "--random-start");
+                if !(0.0..=1.0).contains(&random_start) {
+                    eprintln!("error: --random-start must be in [0, 1]");
+                    std::process::exit(2);
+                }
+            }
             other => {
                 eprintln!("error: unknown argument '{}'", other);
                 std::process::exit(2);
@@ -106,5 +118,6 @@ pub fn parse_train_args(default_namespace: &str) -> TrainArgs {
         num_envs,
         game_dir,
         frame_skip,
+        random_start,
     }
 }

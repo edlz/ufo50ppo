@@ -54,6 +54,7 @@ Throughput: each game copy runs uncapped where it can. On macOS a visible window
 | `--num-envs` | `-N` | Number of game copies to launch (default: 1) |
 | `--game-dir` | `-g` | Lockstep game copy from `bridge/build.sh` (default: `$UFO50_GAME_DIR` or `build/game`) |
 | `--frame-skip` | `-k` | Game frames per training step / action repeat (default: 4) |
+| `--random-start` | `-s` | Fraction of runs that start at a random point in the level, entering as the respawn ghost (default: 0.5) |
 | `--episodes` | `-e` | Max episodes before stopping |
 | `--frames` | `-f` | Max training steps before stopping |
 | `--minutes` | `-m` | Max training time in minutes |

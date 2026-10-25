@@ -1,13 +1,13 @@
 // End-to-end check of the lockstep bridge + Ninpek tracker without a model: launches N game
 // copies, plays random actions through the same reset/drain flow as the trainer, and prints
 // events, episode ends, and throughput.
-// Usage: cargo run --release --bin test_lockstep -- <game dir> [envs] [seconds] [frame skip]
+// Usage: cargo run --release --bin test_lockstep -- <game dir> [envs] [seconds] [frame skip] [start x]
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use ufo50ppo::games::GameTracker;
 use ufo50ppo::games::ninpek::{GAME_ID, NinpekTracker};
-use ufo50ppo::platform::lockstep::{LockstepGame, OBS_H, OBS_W};
+use ufo50ppo::platform::lockstep::{LockstepGame, OBS_H, OBS_W, Start};
 use ufo50ppo::platform::{GameRunner, NUM_ACTIONS};
 
 fn save_ppm(path: &std::path::Path, bgra: &[u8]) {
@@ -22,11 +22,12 @@ fn main() -> std::io::Result<()> {
     let mut args = std::env::args().skip(1);
     let game_dir = PathBuf::from(
         args.next()
-            .expect("usage: test_lockstep <game dir> [envs] [seconds] [frame skip]"),
+            .expect("usage: test_lockstep <game dir> [envs] [seconds] [frame skip] [start x]"),
     );
     let n: usize = args.next().map_or(1, |s| s.parse().unwrap());
     let seconds: u64 = args.next().map_or(60, |s| s.parse().unwrap());
     let frame_skip: u32 = args.next().map_or(4, |s| s.parse().unwrap());
+    let start_x: u32 = args.next().map_or(0, |s| s.parse().unwrap());
 
     let t = Instant::now();
     let mut runners = LockstepGame::launch_many(&game_dir, n, frame_skip, GAME_ID)?;
@@ -39,12 +40,14 @@ fn main() -> std::io::Result<()> {
     let mut draining = vec![true; n];
     let mut drain_start = vec![Instant::now(); n];
     for r in &mut runners {
+        r.set_start(Start::At(start_x));
         r.reset_game();
     }
 
     let mut rng = 0x2545F4914F6CDD1Du64;
     let mut steps = 0u64;
     let mut first_frame = vec![None; n];
+    let mut run_steps = vec![0u32; n];
     let mut last_frame = vec![0u64; n];
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(seconds) {
@@ -73,10 +76,18 @@ fn main() -> std::io::Result<()> {
                             &frame.pixels,
                         );
                         draining[i] = false;
+                        run_steps[i] = 0;
                         runners[i].execute_action(0);
                     }
                 }
                 continue;
+            }
+            run_steps[i] += 1;
+            if run_steps[i] == 60 {
+                save_ppm(
+                    &std::env::temp_dir().join(format!("lockstep_env{i}_play.ppm")),
+                    &frame.pixels,
+                );
             }
             let r = trackers[i].process_frame(&frame);
             if r.is_event {

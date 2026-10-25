@@ -2,7 +2,7 @@
 // Shared buffer layout (must match src/platform/lockstep.rs):
 //   [0, 8)     keys to hold (VK codes, 0 = empty), written by the trainer
 //   [8, 12)    u32 frames to run before the next sync (min 1)
-//   [12, 16)   u32 flags: 1 = quit, 2 = launch game (id in bits 8..15)
+//   [12, 16)   u32 flags: 1 = quit, 2 = launch game (id in bits 8..15, Ninpek start camera x / 16 in bits 16..31)
 //   [16, 144)  16 x f64 game state: frame, room, game id, paused, then Ninpek's
 //              o34_Mas points[0], life[0], state, iWater, then title menuSel,
 //              numPlayers, demo playback, camera x, run kill count, boss HP (see GameState in lockstep.rs)
@@ -49,6 +49,7 @@ if (global.rlOn)
     global.rlPrevKeys = array_create(8, 0);
     global.rlWait = 0;
     global.rlFrame = 0;
+    global.rlStartX = 0;
     audio_master_gain(0);
 }
 ");
@@ -74,6 +75,64 @@ if (global.rlFrame == 2)
     display_reset(0, false);
     display_set_timing_method(tm_sleep);
     display_set_sleep_margin(0);
+}
+// Ninpek: move a fresh run to rlStartX, mirroring the game's own run start (o34_Mas state 10)
+// and death respawn, so spawns, coins and the water section stay consistent with the camera.
+if (global.rlStartX > 0 && instance_exists(o34_Mas) && o34_Mas.state == 20 && !variable_instance_exists(o34_Mas, ""rlWarped""))
+{
+    var _x = global.rlStartX;
+    global.rlStartX = 0;
+    with (o34_Mas)
+    {
+        rlWarped = true;
+        set_xview(_x);
+        with (o34_eSpawn)
+        {
+            if (x < _x + 400)
+            {
+                // Starting past the level-end marker still has to bring in the boss.
+                if (x >= _x || spawn == o34_BossMas)
+                {
+                    instance_create(x, y, spawn);
+                }
+                instance_destroy();
+            }
+        }
+        with (oEnemy)
+        {
+            if (x < _x)
+            {
+                instance_destroy();
+            }
+        }
+        with (o34_BonusSmall)
+        {
+            if (x < _x)
+            {
+                instance_destroy();
+            }
+            else if (x < _x + 400)
+            {
+                visible = true;
+            }
+        }
+        iWater = (_x > 11328) ? 3 : ((_x > 7488) ? 2 : ((_x > 3648) ? 1 : 0));
+        with (o34_Water)
+        {
+            iWater = other.iWater;
+        }
+        if (verify(p[0]))
+        {
+            var _ghost = instance_create(_x + 192, camera_get_view_y(view_get_camera(0)) - 48, o34_Ghost);
+            _ghost.sprite_index = s34_NinjaGhost;
+            _ghost.num = 0;
+            _ghost.myWpn = p[0].myWpn;
+            with (p[0])
+            {
+                instance_destroy();
+            }
+        }
+    }
 }
 if (global.rlWait > 0)
 {
@@ -133,6 +192,7 @@ if (_flags & 1)
 if (_flags & 2)
 {
     var _id = (_flags >> 8) & 255;
+    global.rlStartX = ((_flags >> 16) & 65535) * 16;
     var _slot = 0;
     for (var i = 1; i <= global.NUM_GAMES; i++)
     {

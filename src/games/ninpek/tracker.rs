@@ -23,6 +23,7 @@ pub struct NinpekTracker {
     ep_life_lost: u32,
     ep_stages: u32,
     ep_progress: f64,
+    ep_start_x: f64,
     ep_max_x: f64,
     ep_max_zone: i32,
 }
@@ -40,6 +41,7 @@ impl NinpekTracker {
             ep_life_lost: 0,
             ep_stages: 0,
             ep_progress: 0.0,
+            ep_start_x: 0.0,
             ep_max_x: -1.0,
             ep_max_zone: 0,
         }
@@ -166,6 +168,7 @@ impl GameTracker for NinpekTracker {
         let fresh_run = s.mas_state == PLAYING && !s.paused && !s.demo && s.num_players == 1;
         if self.left_old_run && s.game_id == NINPEK_ID && fresh_run {
             self.prev = Some(s);
+            self.ep_start_x = s.view_x;
             return None;
         }
         // Tap through the title screen (with the cursor on 1 PLAYER) and skip the intro.
@@ -180,9 +183,10 @@ impl GameTracker for NinpekTracker {
 
     fn episode_breakdown(&self) -> String {
         format!(
-            "  furthest x: {:.0} (section {}) | scores: {} | kills: {} | boss dmg: {} | stages: {} | life+: {} | life-: {} | progress: {:.1}",
+            "  furthest x: {:.0} (section {}) | start x: {:.0} | scores: {} | kills: {} | boss dmg: {} | stages: {} | life+: {} | life-: {} | progress: {:.1}",
             self.ep_max_x.max(0.0),
             self.ep_max_zone,
+            self.ep_start_x,
             self.ep_scores,
             self.ep_kills,
             self.ep_boss_damage,
@@ -196,6 +200,8 @@ impl GameTracker for NinpekTracker {
     fn episode_metrics(&self) -> Vec<(&'static str, f64)> {
         vec![
             ("furthest_x", self.ep_max_x.max(0.0)),
+            ("start_x", self.ep_start_x),
+            ("distance", (self.ep_max_x - self.ep_start_x).max(0.0)),
             ("furthest_section", self.ep_max_zone as f64),
             ("kills", self.ep_kills as f64),
             ("boss_damage", self.ep_boss_damage as f64),

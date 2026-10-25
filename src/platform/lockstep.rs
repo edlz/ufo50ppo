@@ -21,8 +21,21 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(90);
 pub const FLAG_QUIT: u32 = 1;
 pub const FLAG_LAUNCH: u32 = 2;
 
-pub const fn launch_flag(game_id: u8) -> u32 {
-    FLAG_LAUNCH | (game_id as u32) << 8
+/// `start_x`: Ninpek camera x to begin the run at (multiple of 16), 0 for the level start.
+pub const fn launch_flag(game_id: u8, start_x: u32) -> u32 {
+    FLAG_LAUNCH | (game_id as u32) << 8 | (start_x / 16) << 16
+}
+
+/// Where `reset_game` starts the next run.
+#[derive(Clone, Copy, Debug)]
+pub enum Start {
+    Beginning,
+    At(u32),
+    /// With probability `frac`, a uniformly random x in [0, max_x); otherwise the beginning.
+    Random {
+        frac: f64,
+        max_x: u32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -61,6 +74,8 @@ pub struct LockstepGame {
     obs: Vec<u8>,
     frame_skip: u32,
     game_id: u8,
+    start: Start,
+    rng: u64,
     pending_flags: u32,
     awaiting_reply: bool,
 }
@@ -130,6 +145,8 @@ impl LockstepGame {
             obs: vec![0; OBS_W * OBS_H * 4],
             frame_skip: frame_skip.max(1),
             game_id,
+            start: Start::Beginning,
+            rng: (port as u64) << 32 | std::process::id() as u64 | 1,
             pending_flags: 0,
             awaiting_reply: false,
         };
@@ -170,6 +187,31 @@ impl LockstepGame {
                     .unwrap_or_else(|_| Err(io::Error::other("launch thread panicked")))
             })
             .collect()
+    }
+
+    pub fn set_start(&mut self, start: Start) {
+        self.start = start;
+    }
+
+    fn next_start_x(&mut self) -> u32 {
+        let mut next = || {
+            self.rng ^= self.rng << 13;
+            self.rng ^= self.rng >> 7;
+            self.rng ^= self.rng << 17;
+            self.rng
+        };
+        let x = match self.start {
+            Start::Beginning => 0,
+            Start::At(x) => x,
+            Start::Random { frac, max_x } => {
+                if (next() >> 11) as f64 / (1u64 << 53) as f64 >= frac || max_x == 0 {
+                    0
+                } else {
+                    (next() % max_x as u64) as u32
+                }
+            }
+        };
+        x / 16 * 16
     }
 
     /// Holds `keys` (VK codes, at most 8) for `frames` frames, then returns once the next frame arrives.
@@ -279,7 +321,8 @@ impl GameRunner for LockstepGame {
     }
 
     fn reset_game(&mut self) {
-        self.pending_flags = launch_flag(self.game_id);
+        let start_x = self.next_start_x();
+        self.pending_flags = launch_flag(self.game_id, start_x);
     }
 
     fn obs_width(&self) -> u32 {

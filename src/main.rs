@@ -1,6 +1,6 @@
 use ufo50ppo::games;
 use ufo50ppo::platform::GameRunner;
-use ufo50ppo::platform::lockstep::LockstepGame;
+use ufo50ppo::platform::lockstep::{LockstepGame, Start};
 use ufo50ppo::train::multi::run_training_multi;
 use ufo50ppo::train::runner::TrainingConfig;
 use ufo50ppo::util::cli;
@@ -19,20 +19,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!(
-        "Training {} | ns: {} | {}x{} | envs: {} | frame skip: {} | game: {}",
+        "Training {} | ns: {} | {}x{} | envs: {} | frame skip: {} | random start: {} | game: {}",
         game.name,
         args.namespace,
         game.obs_width,
         game.obs_height,
         num_envs,
         args.frame_skip,
+        args.random_start,
         args.game_dir.display()
     );
     if let Some(n) = args.max_episodes {
         println!("  Max episodes: {}", n);
     }
 
-    let games = LockstepGame::launch_many(
+    let mut games = LockstepGame::launch_many(
         &args.game_dir,
         num_envs as usize,
         args.frame_skip,
@@ -44,6 +45,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             args.game_dir.display()
         )
     })?;
+    for g in &mut games {
+        g.set_start(Start::Random {
+            frac: args.random_start,
+            max_x: game.max_start,
+        });
+    }
     let runners: Vec<Box<dyn GameRunner>> = games
         .into_iter()
         .map(|g| Box::new(g) as Box<dyn GameRunner>)

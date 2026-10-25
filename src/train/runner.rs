@@ -35,6 +35,8 @@ pub struct GameDefinition {
     pub obs_width: u32,
     pub obs_height: u32,
     pub num_actions: usize,
+    /// Furthest start position `--random-start` may pick (0 = the game only starts at the beginning).
+    pub max_start: u32,
     pub make_tracker: fn() -> Box<dyn GameTracker>,
     pub hyperparams: Hyperparams,
 }

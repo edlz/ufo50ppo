@@ -20,6 +20,8 @@ pub fn definition() -> GameDefinition {
         obs_width: crate::platform::lockstep::OBS_W as u32,
         obs_height: crate::platform::lockstep::OBS_H as u32,
         num_actions: crate::platform::NUM_ACTIONS,
+        // Camera x; the room ends at 14976.
+        max_start: 14000,
         make_tracker: make_ninpek_tracker,
         hyperparams: Hyperparams::default(),
     }
