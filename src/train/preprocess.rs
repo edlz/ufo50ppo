@@ -1,6 +1,6 @@
 use tch::{Device, Kind, Tensor};
 
-const STACK_SIZE: i64 = 4;
+const STACK_SIZE: i64 = 8;
 const COLORS: i64 = 3;
 /// Model input channels: RGB for each stacked frame.
 pub const CHANNELS: i64 = STACK_SIZE * COLORS;

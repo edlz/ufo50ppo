@@ -119,7 +119,7 @@ Ninpek (internal game ID 34 — internal IDs don't follow library order) reads `
 | `train/entropy` | Policy entropy |
 | `train/grad_norm` | Pre-clip gradient L2 norm — diagnostic for value function divergence |
 | `train/explained_variance` | Fraction of return variance explained by V — should climb above 0.5 |
-| `train/learning_rate` | LR (constant unless you change it) |
+| `train/learning_rate` | LR: falls linearly to 10% over the first 15M frames, then holds |
 | `time/fps` | Training throughput |
 
 ## Production-readiness features

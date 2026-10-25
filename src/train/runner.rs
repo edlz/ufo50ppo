@@ -6,6 +6,10 @@ pub struct Hyperparams {
     pub rollout_len: usize,
     pub minibatch_size: usize,
     pub learning_rate: f64,
+    /// Frames over which the learning rate falls linearly to `learning_rate * lr_final_frac`,
+    /// where it then stays; 0 keeps it constant.
+    pub lr_anneal_frames: u64,
+    pub lr_final_frac: f64,
     pub gamma: f64,
     pub gae_lambda: f64,
     pub latest_save_interval: u64,
@@ -18,11 +22,23 @@ impl Default for Hyperparams {
             rollout_len: 1024,
             minibatch_size: 128,
             learning_rate: 1.5e-4,
+            lr_anneal_frames: 15_000_000,
+            lr_final_frac: 0.1,
             gamma: 0.99,
             gae_lambda: 0.95,
             latest_save_interval: 10_000,
             versioned_save_interval: 250_000,
         }
+    }
+}
+
+impl Hyperparams {
+    pub fn learning_rate_at(&self, frames: u64) -> f64 {
+        if self.lr_anneal_frames == 0 {
+            return self.learning_rate;
+        }
+        let t = (frames as f64 / self.lr_anneal_frames as f64).min(1.0);
+        self.learning_rate * (1.0 - t * (1.0 - self.lr_final_frac))
     }
 }
 
@@ -284,3 +300,25 @@ pub(crate) fn report_episode_end(
 
 /// Wall-clock budget for a reset (relaunch + title screen) before it is retried.
 pub(super) const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+#[cfg(test)]
+mod tests {
+    use super::Hyperparams;
+
+    #[test]
+    fn learning_rate_anneals_linearly_then_holds() {
+        let hp = Hyperparams::default();
+        let lr = hp.learning_rate;
+        assert_eq!(hp.learning_rate_at(0), lr);
+        let half = hp.learning_rate_at(hp.lr_anneal_frames / 2);
+        assert!((half - lr * (1.0 + hp.lr_final_frac) / 2.0).abs() < 1e-12);
+        let end = lr * hp.lr_final_frac;
+        assert!((hp.learning_rate_at(hp.lr_anneal_frames) - end).abs() < 1e-12);
+        assert!((hp.learning_rate_at(hp.lr_anneal_frames * 3) - end).abs() < 1e-12);
+        let constant = Hyperparams {
+            lr_anneal_frames: 0,
+            ..Hyperparams::default()
+        };
+        assert_eq!(constant.learning_rate_at(1_000_000_000), lr);
+    }
+}

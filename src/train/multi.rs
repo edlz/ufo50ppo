@@ -444,6 +444,7 @@ pub fn run_training_multi(
                 .map(|&i| prev[i].as_ref().map(|p| p.value).unwrap_or(0.0))
                 .collect();
 
+            opt.set_lr(hp.learning_rate_at(total_frames));
             let stats = run_multi_ppo_update(
                 &mut model,
                 &mut opt,
@@ -542,7 +543,7 @@ pub fn run_training_multi(
                 logger.log_episode_spread(total_frames as usize, ep_min, ep_max);
             }
             println!(
-                "[multi] frames={} ep={} envs={}/{} fps={:.0} ent={:.2} ev={:.2} grad={:.2} reward_std={:.2} best={:+.1} ep_range=[{:+.1},{:+.1}]",
+                "[multi] frames={} ep={} envs={}/{} fps={:.0} ent={:.2} ev={:.2} grad={:.2} lr={:.1e} reward_std={:.2} best={:+.1} ep_range=[{:+.1},{:+.1}]",
                 total_frames,
                 episode,
                 alive_count,
@@ -551,6 +552,7 @@ pub fn run_training_multi(
                 last_entropy,
                 last_ev,
                 last_grad_norm,
+                opt.lr,
                 reward_norm.std(),
                 best_reward,
                 ep_min,
@@ -693,7 +695,7 @@ fn run_multi_ppo_update(
         stats.total_loss,
         stats.grad_norm,
     );
-    logger.log_learning_rate(total_frames as usize, hp.learning_rate);
+    logger.log_learning_rate(total_frames as usize, opt.lr);
     let ev = train::ppo::explained_variance(&merged.values, &all_returns);
     logger.log_explained_variance(total_frames as usize, ev);
 
